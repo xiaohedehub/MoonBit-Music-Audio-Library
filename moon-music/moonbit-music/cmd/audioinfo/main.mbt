@@ -1,4 +1,4 @@
-// audioinfo —— moonbit-music（shunge/audio）的命令行信息工具。只读，不做任何转码。
+// audioinfo —— moonbit-music（hym0721/moonbit-music）的命令行信息工具。只读，不做任何转码。
 //
 // ── 为什么这个 CLI 不能读文件 ────────────────────────────────────────────────
 // moonbit-music 库本身是**零 I/O** 的：按 CONTRACT.md 的硬规则，所有解码入口的输入
@@ -50,7 +50,7 @@ let hex_digits : Array[String] = [
 ///|
 /// 用法文本。`--help` 输出它；参数错误时也打印一次。
 fn usage_text() -> String {
-  "audioinfo \{tool_version} - inspect audio through the shunge/audio decoder (read only)\n" +
+  "audioinfo \{tool_version} - inspect audio through the hym0721/moonbit-music decoder (read only)\n" +
   "\n" +
   "usage:\n" +
   "  audioinfo <file>          print format, duration and tags\n" +
@@ -69,7 +69,7 @@ fn usage_text() -> String {
   "  this build always exits 0: core has no exit(), and abort()/panic() hang on this\n" +
   "  toolchain. Failures print `audioinfo: failed (intended exit code: N)` instead.\n" +
   "\n" +
-  "note: this build cannot open files. The shunge/audio library is I/O-free by contract\n" +
+  "note: this build cannot open files. The hym0721/moonbit-music library is I/O-free by contract\n" +
   "      (every entry point takes an in-memory Bytes), and this CLI stays at zero\n" +
   "      dependencies (moonbitlang/core only, no FFI), while core ships no file API.\n" +
   "      Reading the file is the caller's job; --self-test exercises the library on\n" +
@@ -686,7 +686,7 @@ fn run_file_info(json : Bool, tags_only : Bool, path : String) -> Int {
   } else {
     println("audioinfo: cannot read '\{path}'")
     println("  reason: \{reason}")
-    println("  note  : shunge/audio is I/O-free by contract - every decoder entry point takes")
+    println("  note  : hym0721/moonbit-music is I/O-free by contract - every decoder entry point takes")
     println("          an in-memory Bytes, and reading the file is the caller's job.")
     println("  hint  : run `audioinfo --self-test` to exercise the library, or feed the bytes")
     println("          in from your own code (e.g. moonbitlang/x @fs.read_file_to_bytes).")

@@ -1,10 +1,10 @@
-name = "shunge/audio"
+name = "hym0721/moonbit-music"
 
 version = "0.1.0"
 
 readme = "README.mbt.md"
 
-repository = "https://github.com/buildliming/MoonAudio"
+repository = "https://github.com/xiaohedehub/MoonBit-Music-Audio-Library"
 
 license = "MIT"
 
@@ -17,12 +17,14 @@ keywords = [
   "wav",
   "id3",
   "decoder",
+  "moonbit",
+  "wasm",
 ]
 
 preferred_target = "native"
 
-description = "纯 MoonBit 音频解码库：WAV、FLAC 无损解码、Ogg/Vorbis、MP3，以及 ID3v2 标签解析。零 FFI、零外部依赖，四个后端可用。"
+description = "纯 MoonBit 跨平台音频解码库：WAV、FLAC 无损解码、Ogg/Vorbis、MP3 帧解析、ID3v2 标签解析。零 FFI、零外部依赖，native / js / wasm / wasm-gc 四后端可用。"
 
 options(
-  authors: [ { "name": "lws", "email": "" } ],
+  authors: [ { "name": "hym0721", "email": "hym0721@users.noreply.github.com" } ],
 )

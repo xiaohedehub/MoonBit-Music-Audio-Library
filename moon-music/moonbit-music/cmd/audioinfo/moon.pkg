@@ -7,7 +7,7 @@
 // 原因与取舍写在 main.mbt 的文件头。
 
 import {
-  "shunge/audio" @audio,
+  "hym0721/moonbit-music" @audio,
   "moonbitlang/core/env",
 }
 
