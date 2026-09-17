@@ -1,0 +1,8 @@
+// moonaudio —— 纯 MoonBit 音频解码库
+// 单包结构：本目录下所有 .mbt 同属一个包，文件之间不互相 import。
+// 接口契约见 CONTRACT.md
+
+import {
+  "moonbitlang/core/debug",
+  "moonbitlang/core/encoding/utf8" @utf8,
+}

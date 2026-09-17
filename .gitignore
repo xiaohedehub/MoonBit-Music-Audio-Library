@@ -1,0 +1,43 @@
+# === MoonBit Build Artifacts ===
+_build/
+.moon-lock
+.moon_db
+*.core
+*.mi
+*.ast
+*.mbti
+*.typechecked
+
+# === MoonBit Test Generated ===
+__blackbox_test_info.json
+__internal_test_info.json
+__generated_driver_*.mbt
+
+# === Compiled Binaries ===
+*.exe
+*.dll
+*.so
+*.dylib
+*.wasm
+*.js.map
+*.obj
+*.lib
+
+# === Python Cache ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# === System / IDE ===
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# === Temp Files ===
+*.tmp
+*.temp
+*.log
+new-project.html

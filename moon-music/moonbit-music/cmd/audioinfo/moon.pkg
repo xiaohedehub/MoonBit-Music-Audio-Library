@@ -1,0 +1,14 @@
+// audioinfo —— moonaudio 的命令行信息工具（只读，不转码）。
+//
+// 零依赖：只 import 本库和 `moonbitlang/core` 的 `env`，不使用 FFI，
+// 也不引入任何外部包。`Buffer` / `Bytes` 等来自 core 的 prelude，无需显式 import。
+//
+// 注意：`moonbitlang/core` 没有文件 I/O API，所以本工具读不到文件 ——
+// 原因与取舍写在 main.mbt 的文件头。
+
+import {
+  "shunge/audio" @audio,
+  "moonbitlang/core/env",
+}
+
+pkgtype(kind: "executable")
