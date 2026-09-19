@@ -1,28 +1,41 @@
-// moonbit-music —— 测试语料构造器（合成字节）
+// moonbit-music —— 零依赖测试语料工厂（纯函数合成字节样本）
 //
-// 本文件的所有 `fixture_*` 函数都是**纯函数**：不读文件、不做网络 I/O、不用系统随机数。
-// 每一次调用对同一组参数都产出完全相同的字节，保证测试可复现。
+// = 模块定位 =
+//   为所有 *_test.mbt 提供可复现、可离线、不依赖外部样本文件的
+//   字节级测试向量。覆盖 WAV / FLAC / Ogg / Vorbis / MP3 / ID3v2 的
+//   头部、帧结构、以及典型的"坏数据"（截断、CRC 错、魔数错等）。
 //
-// 设计约定
-// --------
-// * 字节序：WAV 小端、Ogg 小端、ID3v2 大端（帧 size 依版本不同，见下）。
-// * WAV 的 8 位样本是**无符号**存储（0..255，静音 = 128），本文件写入时自动 +128；
-//   16 / 24 / 32 位按有符号二补码小端写入，只取低 `bits` 位。
-// * 所有 chunk 的 size 字段与 RIFF size 字段都是**真的算出来**的，不是写死的常量。
-// * 奇数长度的 chunk 会补 1 个 padding 字节，且 padding **不计入** size 字段。
-// * `Bytes` 在本工具链里是不可变的，需要就地改写时统一走 `FixedArray[Byte]`
-//   （`fixture_patch_le32` / `fixture_wav_patch_data_size` / `fixture_ogg_page_with_crc`）。
+// = 核心原则 =
+//   所有 `fixture_*` 函数都是严格**纯函数**：
+//     * 不读文件 / 不下载 / 不访问系统随机数 / 不读系统时钟
+//     * 相同参数 + 相同进程 → 字节级完全相同的输出
+//     * 不依赖除 moonbitlang/core 之外的任何包
+//   这样单元测试可以在 CI、沙箱、离线环境下一致通过，不受网络/缓存影响。
 //
-// Ogg page 的 CRC
-// ---------------
-// `fixture_ogg_page` **会自己算出并填入正确的 CRC**
-//（多项式 0x04C11DB7，无反射，初值 0，不取反 —— 与 CONTRACT.md 里 `ogg_crc32` 的约定一致；
-// 计算时校验和字段自身按 0 参与，计算范围是整个 page）。
-// 因此：
-//   * 想测「CRC 校验通过」→ 直接用 `fixture_ogg_page` 的输出。
-//   * 想测「CRC 校验失败」→ 用 `fixture_ogg_page_with_crc` 传一个错误的 CRC，
-//     或用 `fixture_wav_patch_data_size` 之外的手段改第 22..25 字节。
-// 单独的 CRC 计算入口是 `fixture_ogg_crc32`，方便测试直接对拍。
+// = 字节序与对齐约定 =
+//   各格式严格遵循其规范：
+//     * WAV (RIFF)   → 小端，16/24/32-bit 有符号二补码，8-bit 无符号 (+128 偏移)
+//     * Ogg Page     → 小端，segment_table 计数严格匹配 page_segments
+//     * ID3v2        → 大端，size 为同步安全整数（高 bit 恒 0）
+//     * FLAC frame   → 大端，子帧头 + 残差 Rice 码
+//     * MP3 frame    → 大端，同步字 0xFFE 之后按规范位序
+//   所有 chunk/size 字段**真的算出来**，不是写死的 magic number。
+//
+// = Ogg CRC 的特殊处理 =
+//   `fixture_ogg_page` 会在输出前自行计算并填入**正确的 CRC**（多项式
+//   0x04C11DB7，无反射，初值 0，不取反）。因此：
+//     * 想测 "CRC 正确 → 通过" → 直接用 `fixture_ogg_page`
+//     * 想测 "CRC 错误 → 失败" → 用 `fixture_ogg_page_with_crc(0xDEADBEEF)`
+//   独立的 CRC 计算入口是 `fixture_ogg_crc32`，可直接被测试调用做对拍。
+//
+// = UTF-8 编码为什么自实现 =
+//   两条**实测结论**，不要凭直觉改回去：
+//     1. `String::to_bytes()` 产出的是 **UTF-16LE**，不是 UTF-8
+//        （"Hi" → 48 00 69 00，10 字节而非 2 字节）。它也已被标记 deprecated。
+//     2. `moonbitlang/core/encoding/utf8` 在当前 registry 沙箱里
+//        显式 import 反而报 "Package encoding/utf8 not found"。
+//   所以这里手写一个零依赖、零警告、行为确定的 UTF-8 编码器（含代理对处理），
+//   正好满足 fixture 的可复现要求。
 
 // ---------------------------------------------------------------------------
 // 内部小工具

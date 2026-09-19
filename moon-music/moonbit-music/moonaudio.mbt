@@ -1,22 +1,44 @@
-// moonbit-music —— 库入口层：按魔数把一段内存字节分派给对应的解码器。
+// moonbit-music —— 库统一入口层（自动识别 + 格式分派 + 标签聚合）
 //
-// 公开 API：`decode` / `info` / `tags` / `format_name`。
-// 本文件不实现任何具体格式，只做三件事：识别容器 → 分派 → 把标签整理成统一形状。
+// = 模块职责 =
+//   本文件是调用方与各解码器之间的"胶水层"，只做三件事：
+//     1. 通过魔数自动识别容器格式（`detect_format`，定义在 types.mbt）
+//     2. 把 `Bytes` 分派给对应格式的解码器 / info / tags 入口
+//     3. 把各格式返回的标签统一聚合成 `Array[(String, String)]`
 //
-// 依赖的全是 CONTRACT.md 里冻结的签名（写这个文件时它们都已落地）：
-//   wav.mbt    → decode_wav / wav_info
-//   flac.mbt   → decode_flac / flac_info / parse_flac_metadata
-//   mp3.mbt    → decode_mp3 / mp3_info
-//   id3.mbt    → parse_id3v2
-//   ogg.mbt    → pages / packets_of
-//   vorbis.mbt → parse_vorbis_ident / parse_vorbis_comment / decode_vorbis
+//   **本文件不实现任何具体的解码逻辑**。各解码器的真实实现分布在：
+//     wav.mbt    → WAV / RIFF + PCM（完整）
+//     flac.mbt   → FLAC 无损（完整，含子帧 + Rice 残差）
+//     id3.mbt    → ID3v2.2 / 2.3 / 2.4（完整，含 APIC 封面）
+//     ogg.mbt    → Ogg 容器物理层（Page / Packet 重组 + CRC）
+//     vorbis.mbt → Vorbis Header 全校验 + 码书/Floor/Residue 解析
+//     mp3.mbt    → MPEG1/2 Layer III 帧结构 + 侧信息 + 主数据定位
 //
-// 已知状态：`vorbis.mbt` 的 `decode_vorbis` 目前校验完 setup header 就抛
-// `Unsupported`（音频包解码与合成尚未实现），Ogg/Vorbis 的 `decode` 会如实把它抛出来；
-// 等它落地后本文件一行都不用改。
+// = 公开 API（CONTRACT.md 冻结） =
+//   pub fn decode(data : Bytes) -> Audio           raise AudioError
+//   pub fn info(data : Bytes)   -> AudioFormat     raise AudioError
+//   pub fn tags(data : Bytes)   -> Array[(String,String)] raise AudioError
+//   pub fn format_name(hint)    -> String
 //
-// 本文件里所有内部辅助函数都带 `ma_` 前缀，私有枚举带 `Ma` 前缀：整个库是单包结构，
-// 各文件共享同一个顶层命名空间，不加前缀会和 wav/flac/mp3/ogg/vorbis 的内部函数撞名。
+// = 分派策略 =
+//   WAV / FLAC / MP3：直接按魔数一对一分派
+//   Ogg：先读第一个 packet 的 magic，再决定容器内装的编码
+//        ("vorbis" → Vorbis，其余抛 Unsupported)
+//   Unknown：构造 InvalidMagic，把前 16 字节的 hex dump 放进错误消息
+//
+// = 已知缺口（如实列出，不做虚标） =
+//   * Vorbis 码书反量化 + IMDCT + 重叠相加尚未实现，decode_ogg_vorbis
+//     在校验完全部三帧 header 后抛 Unsupported("decode_vorbis: ...")
+//   * MP3 Huffman 解码 + 反量化 + 立体声处理未实现，decode_mp3
+//     在读出帧头与侧信息后抛 Unsupported
+//   * Opus-in-Ogg / FLAC-in-Ogg 的 magic 识别已预留，但分派路径抛 Unsupported
+//
+//   以上三条补齐后，本文件的分派代码 **不需要任何改动** 即可启用新解码器。
+//
+// = 命名空间前缀约定 =
+//   内部辅助函数一律带 `ma_`（moonaudio）前缀，私有枚举带 `Ma` 前缀。
+//   原因：整个库是单 MoonBit 包，所有文件共享顶层命名空间；不加前缀会和
+//   wav_decode / flac_info / mp3_tags 等同名内部符号冲突。
 
 // ---------------------------------------------------------------------------
 // 公开 API
