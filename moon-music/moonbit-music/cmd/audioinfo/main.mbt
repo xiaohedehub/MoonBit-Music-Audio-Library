@@ -39,7 +39,7 @@
 
 ///|
 /// 工具版本号。与 moon.mod 的 version 保持一致。
-let tool_version : String = "0.1.0"
+let tool_version : String = "0.1.1"
 
 ///|
 /// 十六进制数字表。`String::substring` 在本工具链上已废弃，这里用查表避开它。
@@ -56,6 +56,7 @@ fn usage_text() -> String {
   "  audioinfo <file>          print format, duration and tags\n" +
   "  audioinfo --json <file>   same, as one line of JSON\n" +
   "  audioinfo --tags <file>   print tags only\n" +
+  "  audioinfo --check <file>  identify format only (skip full decode)\n" +
   "  audioinfo --self-test     run the built-in in-memory fixtures through the library\n" +
   "  audioinfo --version       print the version\n" +
   "  audioinfo --help          print this help\n" +
@@ -63,6 +64,7 @@ fn usage_text() -> String {
   "modifiers:\n" +
   "  --json                    machine readable output\n" +
   "  --tags                    tags only\n" +
+  "  --check, --check-only     format detection only, skip decode\n" +
   "\n" +
   "exit codes:\n" +
   "  intended: 0 success / 1 usage / 2 unreadable file / 3 decode failure.\n" +
@@ -86,9 +88,9 @@ enum Action {
   Help
   Version
   /// 文件模式：本构建读不到文件，只会打印说明。
-  FileInfo(json~ : Bool, tags_only~ : Bool, path~ : String)
+  FileInfo(json~ : Bool, tags_only~ : Bool, check_only~ : Bool, path~ : String)
   /// 内存自检。
-  SelfTest(json~ : Bool, tags_only~ : Bool)
+  SelfTest(json~ : Bool, tags_only~ : Bool, check_only~ : Bool)
 }
 
 ///|
@@ -96,6 +98,7 @@ enum Action {
 fn parse_args(argv : Array[String]) -> Result[Action, String] {
   let mut json = false
   let mut tags_only = false
+  let mut check_only = false
   let mut self_test = false
   let mut path : String? = None
   for i = 1; i < argv.length(); i = i + 1 {
@@ -108,6 +111,8 @@ fn parse_args(argv : Array[String]) -> Result[Action, String] {
       json = true
     } else if arg == "--tags" {
       tags_only = true
+    } else if arg == "--check" || arg == "--check-only" {
+      check_only = true
     } else if arg == "--self-test" {
       self_test = true
     } else if starts_with_dash(arg) {
@@ -121,11 +126,11 @@ fn parse_args(argv : Array[String]) -> Result[Action, String] {
   if self_test {
     match path {
       Some(p) => Err("--self-test does not take a file path (got \{p})")
-      None => Ok(Action::SelfTest(json~, tags_only~))
+      None => Ok(Action::SelfTest(json~, tags_only~, check_only~))
     }
   } else {
     match path {
-      Some(p) => Ok(Action::FileInfo(json~, tags_only~, path=p))
+      Some(p) => Ok(Action::FileInfo(json~, tags_only~, check_only~, path=p))
       None => Err("missing file path (or use --self-test)")
     }
   }
@@ -253,9 +258,20 @@ fn fixtures() -> Array[Fixture] {
 /// 失败时按契约抛 `@audio.AudioError`，由 `run_probe()` 接住。
 /// 真实的 CLI 里 `data` 由调用方读文件得到；本构建读不到文件，
 /// 所以只喂内存里合成的夹具 —— 见文件头。
-fn probe(data : Bytes, tags_only : Bool) -> Probe raise @audio.AudioError {
-  if tags_only {
-    // 只看标签时不必完整解码。
+///
+/// `check_only = true` 时只做 `detect_format` + `info()`（不解码样本），
+/// 适合大文件快速预检。
+fn probe(data : Bytes, tags_only : Bool, check_only : Bool) -> Probe raise @audio.AudioError {
+  if check_only {
+    // 预检模式：只调 info()，不分配 PCM 缓冲。
+    let info = @audio.info(data)
+    {
+      format: Some(info.format),
+      frames: None,
+      duration: None,
+      tags: Some(info.tags),
+    }
+  } else if tags_only {
     { format: None, frames: None, duration: None, tags: Some(@audio.tags(data)) }
   } else {
     let audio = @audio.decode(data)
@@ -293,9 +309,9 @@ enum Outcome {
 ///      调用方才能真正按分支做不同处理；
 ///   2. 本工具链的 `panic()` / `abort()` 会挂死（见文件头），任何异常都必须在
 ///      进程内接住，不能指望运行时帮你退出。
-fn run_probe(data : Bytes, tags_only : Bool) -> Outcome {
+fn run_probe(data : Bytes, tags_only : Bool, check_only : Bool) -> Outcome {
   try {
-    Probed(probe(data, tags_only))
+    Probed(probe(data, tags_only, check_only))
   } catch {
     @audio.InvalidMagic(message) => DecodeFailed("InvalidMagic", [("message", message)])
     @audio.Unsupported(feature) => DecodeFailed("Unsupported", [("feature", feature)])
@@ -585,7 +601,7 @@ fn wav_roundtrip_ok(outcome : Outcome) -> Bool {
 ///
 /// 不读文件、不依赖任何外部资源，所以在当前构建里也能跑通，
 /// 用来证明「库可以被外部调用」。全部硬断言通过返回 0，否则返回 3。
-fn run_self_test(json : Bool, tags_only : Bool) -> Int {
+fn run_self_test(json : Bool, tags_only : Bool, check_only : Bool) -> Int {
   let cases = fixtures()
   let mut matched = 0
   let mut wav_ok = false
@@ -597,7 +613,7 @@ fn run_self_test(json : Bool, tags_only : Bool) -> Int {
       }
       let item = cases[i]
       let hint = @audio.detect_format(item.data)
-      let outcome = run_probe(item.data, tags_only)
+      let outcome = run_probe(item.data, tags_only, check_only)
       if hint.to_string() == item.expect {
         matched = matched + 1
       }
@@ -621,6 +637,9 @@ fn run_self_test(json : Bool, tags_only : Bool) -> Int {
   } else {
     println("audioinfo \{tool_version} - self test")
     println("  \{cases.length()} in-memory fixtures, no file I/O")
+    if check_only {
+      println("  --check-only: format detect + info() only, no full decode")
+    }
     for i = 0; i < cases.length(); i = i + 1 {
       let item = cases[i]
       let hint = @audio.detect_format(item.data)
@@ -630,7 +649,7 @@ fn run_self_test(json : Bool, tags_only : Bool) -> Int {
       if ok {
         matched = matched + 1
       }
-      let outcome = run_probe(item.data, tags_only)
+      let outcome = run_probe(item.data, tags_only, check_only)
       if item.decodable && wav_roundtrip_ok(outcome) {
         wav_ok = true
       }
@@ -641,6 +660,8 @@ fn run_self_test(json : Bool, tags_only : Bool) -> Int {
       } else {
         println("        expected_format : \{item.expect}")
         println("        detected_format : \{detected}  [\{verdict}]")
+        println("        extension_hint  : \{hint.extension()}")
+        println("        display_name    : \{hint.display_name()}")
         print_outcome(outcome, "        ", tags_only)
       }
     }
@@ -651,15 +672,22 @@ fn run_self_test(json : Bool, tags_only : Bool) -> Int {
     println("  detect_format   : \{matched}/\{cases.length()}")
     println("  WAV round trip  : \{if wav_ok { "ok" } else { "FAIL" }}")
     println("  passed          : \{passed}/\{total}")
-    if !wav_ok {
+    if !wav_ok && !check_only {
       println("")
       println("note: the synthetic WAV did not decode to 8000 Hz / 1 ch / 16 bit / 8 frames.")
       println("      everything else (identification + structured errors) still ran.")
     }
+    if check_only {
+      println("")
+      println("note: --check-only mode skips full decode; WAV round trip assertion is by design not validated.")
+    }
   }
   let total = cases.length() + 1
   let passed = matched + (if wav_ok { 1 } else { 0 })
-  if passed == total {
+  // check-only 模式不校验 roundtrip，所以只要 detect 全部通过就算成功
+  if check_only {
+    if matched == cases.length() { 0 } else { 3 }
+  } else if passed == total {
     0
   } else {
     3
@@ -671,14 +699,44 @@ fn run_self_test(json : Bool, tags_only : Bool) -> Int {
 // ---------------------------------------------------------------------------
 
 ///|
+/// 从路径名中提取扩展名（最后一个 `.` 之后的部分，小写）。没有点返回空串。
+fn path_extension(path : String) -> String {
+  let mut last_dot = -1
+  for i = 0; i < path.length(); i = i + 1 {
+    if path.get(i) == '.' {
+      last_dot = i
+    }
+  }
+  if last_dot < 0 || last_dot == path.length() - 1 {
+    return ""
+  }
+  let mut out = ""
+  for i = last_dot + 1; i < path.length(); i = i + 1 {
+    out = out + "\{path.get(i)}"
+  }
+  out.to_lowercase()
+}
+
+///|
 /// 文件模式：说明本构建为什么读不到文件，并返回「本应是 2」的退出码。
-fn run_file_info(json : Bool, tags_only : Bool, path : String) -> Int {
+///
+/// 额外基于扩展名用 `format_from_extension()` 推断格式，并和实际字节的
+/// `detect_format` 一起展示 —— 即使读不到文件，也演示了「扩展名推断 + 魔数
+/// 识别」的双路策略。
+fn run_file_info(json : Bool, tags_only : Bool, check_only : Bool, path : String) -> Int {
   ignore(tags_only)
+  ignore(check_only)
+  let ext = path_extension(path)
+  let ext_hint = @audio.format_from_extension(ext)
   let reason = "no file I/O in this build: moonbitlang/core ships no file API and this CLI is kept dependency-free (no FFI, no external packages)"
   if json {
     println(
       "{\"path\":\"" +
       json_escape(path) +
+      "\",\"extension\":\"" +
+      json_escape(ext) +
+      "\",\"extension_hint\":\"" +
+      json_escape(ext_hint.to_string()) +
       "\",\"error\":{\"branch\":\"NoFileIo\",\"message\":\"" +
       json_escape(reason) +
       "\"}}",
@@ -686,6 +744,12 @@ fn run_file_info(json : Bool, tags_only : Bool, path : String) -> Int {
   } else {
     println("audioinfo: cannot read '\{path}'")
     println("  reason: \{reason}")
+    if ext.length() > 0 {
+      println("  extension: .\{ext}")
+      println("  extension_hint: \{ext_hint.display_name()} (.{ext_hint.extension()})")
+    } else {
+      println("  extension: (none)")
+    }
     println("  note  : hym0721/moonbit-music is I/O-free by contract - every decoder entry point takes")
     println("          an in-memory Bytes, and reading the file is the caller's job.")
     println("  hint  : run `audioinfo --self-test` to exercise the library, or feed the bytes")
@@ -730,8 +794,8 @@ fn main {
       println("audioinfo \{tool_version}")
       0
     }
-    Ok(Action::SelfTest(json~, tags_only~)) => run_self_test(json, tags_only)
-    Ok(Action::FileInfo(json~, tags_only~, path~)) => run_file_info(json, tags_only, path)
+    Ok(Action::SelfTest(json~, tags_only~, check_only~)) => run_self_test(json, tags_only, check_only)
+    Ok(Action::FileInfo(json~, tags_only~, check_only~, path~)) => run_file_info(json, tags_only, check_only, path)
   }
   finish(code)
 }

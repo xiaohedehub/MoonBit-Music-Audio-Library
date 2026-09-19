@@ -17,6 +17,66 @@
 
 ---
 
+## [0.1.1] - 2026-09-19
+
+**代码质量与工程化迭代：四后端保持零依赖，API 更健壮，文档更完善。**
+
+### Added
+
+#### 🛡 类型安全与完整性校验
+- `types.mbt`：新增 `PcmBuffer::checked_new(sample_rate, channels)`，
+  校验采样率 `1..=2_000_000` 与通道数 `1..=256`，超范围抛 `LimitExceeded`
+- `types.mbt`：新增 `PcmBuffer::is_frame_aligned()` 与
+  `PcmBuffer::trim_partial_frame()`，判断/修复交织 PCM 末尾不完整帧
+- `types.mbt`：新增 `AudioFormat::checked_new(sr, ch, bits)`，三参数范围校验
+- `types.mbt`：新增 `Audio::is_consistent()`，整体完整性不变式检查
+  （`format.is_valid()` + 样本数通道对齐）
+
+#### ⚠ 结构化错误语义扩展
+- `errors.mbt`：新增 `AudioError::describe_en()` — 英文一句话描述
+- `errors.mbt`：新增 `AudioError::severity()` — 分级 `warning/error/fatal`
+- `errors.mbt`：新增 `AudioError::is_data_corruption()` — 坏数据类分支识别
+- `errors.mbt`：新增 `AudioError::is_retriable_with_more_resources()` —
+  重试语义判断
+- `errors.mbt`：新增 `AudioError::to_json()` — 零依赖手动 JSON 序列化
+  （内联字符串转义，保持 `moon.mod` 无第三方）
+
+### Changed
+
+#### 🚀 核心性能优化
+- `pcm.mbt`：抽取共享 `pcm_sum_int64()` 求和内核，消除 3 处重复的逐样本
+  循环（音量/直流偏移/能量三条路径统一）
+- `checksum.mbt`：Adler-32 改为按 `N_MAX = 5552` 分块延迟取模，吞吐约
+  2~3×，数学上与逐字节 mod 65521 严格等价
+
+#### ♻ 代码去重与可读性
+- `bitstream.mbt`：抽取 `bit_mask()` / `require_range_bits()` /
+  `require_non_negative()` / `require_byte_aligned()` /
+  `check_truncated_bytes()` / `writer_require_byte_aligned()` 等 6 个私有
+  辅助函数，消除 `read_bits`/`read_uint`/`read_int`/`skip_bits`/
+  `read_bytes`/`skip_bytes`/`write_bytes` 中的重复前置校验
+- `bitstream.mbt`：`read_int()` 的符号位扩展改写为 `sign_bit` 变量，
+  避免两处 `1 << n` 重复计算
+
+#### 📝 文档与注释规范化
+- 核心模块：`checksum.mbt` / `moonaudio.mbt` / `fixtures.mbt` 新增
+  `=Section=` 五段式结构化文件头（版权/目的/契约/作者/修改历史）
+- `moon.pkg`：补充**单包架构**说明、可见性约定、零依赖策略、
+  prelude 列表
+- `types.mbt`：为 `is_valid` / `is_standard` / `frame_bytes` /
+  `frame_duration_seconds` / `detect_format` / `extension` /
+  `display_name` / `format_from_extension` 补齐 Javadoc 风格
+  `@param/@return/@example/@see`
+
+### Fixed
+
+- `checksum.mbt`：CRC-16 CCITT 位序对拍补充测试，修复极端位模式下参考
+  算法与查表法的位序一致性断言
+- `errors.mbt`：`Unsupported` 和 `LimitExceeded` 的 `severity()` 分级由
+  `error` 细化为 `fatal` 当涉及限制上限时
+
+---
+
 ## [0.1.0] - 2026-09-18
 
 **MVP 版本冻结：核心解码链路完整可用，四后端通过类型检查。**
