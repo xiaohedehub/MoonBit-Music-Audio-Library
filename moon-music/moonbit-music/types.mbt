@@ -149,6 +149,91 @@ pub fn Audio::frame_count(self : Audio) -> Int {
 }
 
 ///|
+/// 按大小写不敏感的键名查找标签。未找到返回 `None`。
+///
+/// 键名匹配规则：去掉前后空白、ASCII 大小写不敏感。匹配顺序按标签
+/// 数组原有顺序，返回第一个命中的值。
+pub fn Audio::get_tag(self : Audio, key : String) -> String? {
+  let lower = key.trim().to_lowercase()
+  for (k, v) in self.tags {
+    if k.trim().to_lowercase() == lower {
+      return Some(v)
+    }
+  }
+  None
+}
+
+///|
+/// 获取标题标签（兼容常见的几种键名）。
+pub fn Audio::title(self : Audio) -> String? {
+  self.get_tag("TIT2") ?? self.get_tag("title") ?? self.get_tag("Title")
+}
+
+///|
+/// 获取艺术家标签。
+pub fn Audio::artist(self : Audio) -> String? {
+  self.get_tag("TPE1") ?? self.get_tag("artist") ?? self.get_tag("Artist")
+}
+
+///|
+/// 获取专辑标签。
+pub fn Audio::album(self : Audio) -> String? {
+  self.get_tag("TALB") ?? self.get_tag("album") ?? self.get_tag("Album")
+}
+
+///|
+/// 把秒数格式化为 `HH:MM:SS.xxx` 或 `MM:SS.xxx`，小时省略（不足 1 小时）。
+///
+/// 负时长视为 0。毫秒三位，不做四舍五入（直接截断到毫秒）。
+pub fn format_duration(total_seconds : Double) -> String {
+  let total = if total_seconds < 0.0 { 0.0 } else { total_seconds }
+  let ms = ((total - Double::floor(total)) * 1000.0).to_int()
+  let mut secs = Double::floor(total).to_int()
+  let hours = secs / 3600
+  secs = secs - hours * 3600
+  let minutes = secs / 60
+  secs = secs - minutes * 60
+  let pad2 = fn (n : Int) -> String {
+    if n < 10 { "0\{n}" } else { "\{n}" }
+  }
+  let pad3 = fn (n : Int) -> String {
+    if n < 10 { "00\{n}" } else if n < 100 { "0\{n}" } else { "\{n}" }
+  }
+  if hours > 0 {
+    "\{hours}:\{pad2(minutes)}:\{pad2(secs)}.\{pad3(ms)}"
+  } else {
+    "\{pad2(minutes)}:\{pad2(secs)}.\{pad3(ms)}"
+  }
+}
+
+///|
+/// 返回格式化的时长字符串（HH:MM:SS.xxx 或 MM:SS.xxx）。
+pub fn Audio::duration_string(self : Audio) -> String {
+  format_duration(self.duration_seconds())
+}
+
+///|
+/// 把标签导出为「key=value」的多行字符串，每帧一行，用于调试输出。
+pub fn Audio::tags_to_string(self : Audio) -> String {
+  if self.tags.length() == 0 {
+    return "(无标签)"
+  }
+  let buf = Buffer()
+  let mut first = true
+  for (k, v) in self.tags {
+    if first {
+      first = false
+    } else {
+      buf.write_string("\n")
+    }
+    buf.write_string(k)
+    buf.write_string("=")
+    buf.write_string(v)
+  }
+  buf.to_string()
+}
+
+///|
 /// 按魔数猜测容器/编码格式。不解析元数据，只看前若干字节。
 ///
 /// 实现 `Eq` / `Debug`：调用方与测试需要用 `assert_eq` 直接比较格式判定结果，
