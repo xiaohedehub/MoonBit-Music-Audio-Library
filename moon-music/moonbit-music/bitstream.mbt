@@ -298,3 +298,153 @@ pub fn BitWriter::to_bytes(self : BitWriter) -> Bytes {
   }
   out.to_bytes()
 }
+
+// ---------------------------------------------------------------------------
+// 扩展辅助：子视图、快照/回滚、字节对齐与字节级读写
+// ---------------------------------------------------------------------------
+
+///|
+/// 当前位游标快照（位偏移整数），与 `restore` 配合实现事务式试读。
+///
+/// 与 `seek(pos)` 等价，只是把「保存当前位置」显式封装成了一个动作。
+pub fn BitReader::snapshot(self : BitReader) -> Int {
+  self.bit_pos
+}
+
+///|
+/// 把位游标重置到 `pos`。越界（负数或超过数据总长）抛 `Truncated`。
+pub fn BitReader::seek(self : BitReader, pos : Int) -> Unit raise AudioError {
+  let total = self.data.length() * 8
+  if pos < 0 || pos > total {
+    raise AudioError::Truncated(offset=pos, needed=0, available=total - pos)
+  }
+  self.bit_pos = pos
+}
+
+///|
+/// 当前是否在字节边界（即已经读完整数个字节）。
+pub fn BitReader::is_byte_aligned(self : BitReader) -> Bool {
+  (self.bit_pos & 7) == 0
+}
+
+///|
+/// 读 `n` 个完整字节，要求游标已经在字节边界。返回的 `Bytes` 长度恰好为 `n`。
+///
+/// 游标不在边界上抛 `Unsupported`；字节不够抛 `Truncated`。
+pub fn BitReader::read_bytes(self : BitReader, n : Int) -> Bytes raise AudioError {
+  if n < 0 {
+    raise AudioError::Unsupported("BitReader::read_bytes: 长度不能为负，实际为 \{n}")
+  }
+  if !self.is_byte_aligned() {
+    raise AudioError::Unsupported(
+      "BitReader::read_bytes: 要求字节对齐，当前位偏移为 \{self.bit_pos}",
+    )
+  }
+  let byte_pos = self.bit_pos >> 3
+  let avail_bytes = self.data.length() - byte_pos
+  if avail_bytes < n {
+    raise AudioError::Truncated(
+      offset=self.bit_pos,
+      needed=n * 8,
+      available=avail_bytes * 8,
+    )
+  }
+  let out = Buffer()
+  for i = 0; i < n; i = i + 1 {
+    out.write_byte(self.data[byte_pos + i])
+  }
+  self.bit_pos = self.bit_pos + n * 8
+  out.to_bytes()
+}
+
+///|
+/// 跳过 `n` 个完整字节（要求字节对齐）。
+pub fn BitReader::skip_bytes(self : BitReader, n : Int) -> Unit raise AudioError {
+  if n < 0 {
+    raise AudioError::Unsupported("BitReader::skip_bytes: 长度不能为负，实际为 \{n}")
+  }
+  if !self.is_byte_aligned() {
+    raise AudioError::Unsupported(
+      "BitReader::skip_bytes: 要求字节对齐，当前位偏移为 \{self.bit_pos}",
+    )
+  }
+  let byte_pos = self.bit_pos >> 3
+  let avail_bytes = self.data.length() - byte_pos
+  if avail_bytes < n {
+    raise AudioError::Truncated(
+      offset=self.bit_pos,
+      needed=n * 8,
+      available=avail_bytes * 8,
+    )
+  }
+  self.bit_pos = self.bit_pos + n * 8
+}
+
+///|
+/// 创建一个「子视图」读取器：从当前位置开始、最多 `max_bits` 位。
+///
+/// 新读取器的数据是原数据的「游标不可变」视图：修改子读取器的游标
+/// 不影响原读取器；反之亦然。这是典型的「解析一个固定长度的位块」的模式。
+///
+/// `max_bits` 为负数或超过原读取器剩余位数时，按剩余位数截断。
+pub fn BitReader::slice(self : BitReader, max_bits : Int) -> BitReader {
+  let byte_pos = self.bit_pos >> 3
+  let bit_off = self.bit_pos & 7
+  let remaining = self.remaining()
+  let want = if max_bits < 0 { remaining } else { Int::min(max_bits, remaining) }
+  let tail_bytes = (want + bit_off + 7) >> 3
+  let end_byte = Int::min(byte_pos + tail_bytes, self.data.length())
+  let sub = self.data.slice(byte_pos, end_byte - byte_pos)
+  let r = BitReader::new(sub)
+  // 把内部位游标移到 bit_off。直接写字段：我们在同一个包内。
+  r.bit_pos = bit_off
+  r
+}
+
+///|
+/// 读取一个 8 位无符号字节，要求字节对齐。等价于 `read_bits(8)` 但校验对齐。
+pub fn BitReader::read_u8(self : BitReader) -> Int raise AudioError {
+  self.read_bytes(1)[0].to_int()
+}
+
+///|
+/// 读取一个 16 位无符号小端整数，要求字节对齐。
+pub fn BitReader::read_u16_le(self : BitReader) -> Int raise AudioError {
+  let b = self.read_bytes(2)
+  b[0].to_int() | (b[1].to_int() << 8)
+}
+
+///|
+/// 读取一个 32 位无符号小端整数（返回 Int，位模式原样保留），要求字节对齐。
+pub fn BitReader::read_u32_le(self : BitReader) -> Int raise AudioError {
+  let b = self.read_bytes(4)
+  (b[0].to_int() |
+   (b[1].to_int() << 8) |
+   (b[2].to_int() << 16) |
+   (b[3].to_int() << 24))
+}
+
+///|
+/// 在 BitWriter 末尾补齐到字节边界，不足位置 0（若已对齐则为空操作）。
+///
+/// 与 `to_bytes()` 的区别：本函数**永久修改**写入器状态，把补位真正写入。
+/// 在编码器中需要这样做，因为后续写入要从新的字节边界开始。
+pub fn BitWriter::pad_to_byte(self : BitWriter) -> Unit {
+  let tail = self.bit_len & 7
+  if tail != 0 {
+    self.write_bits(0, 8 - tail)
+  }
+}
+
+///|
+/// 写入 n 个完整字节（作为 8 位 MSB-first 串），要求当前已经在字节边界。
+pub fn BitWriter::write_bytes(self : BitWriter, bytes : Bytes) -> Unit raise AudioError {
+  if (self.bit_len & 7) != 0 {
+    raise AudioError::Unsupported(
+      "BitWriter::write_bytes: 要求字节对齐，当前位长度为 \{self.bit_len}",
+    )
+  }
+  for b in bytes {
+    self.write_bits(b.to_int(), 8)
+  }
+}
