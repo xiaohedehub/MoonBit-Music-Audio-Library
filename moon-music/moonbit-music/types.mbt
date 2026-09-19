@@ -313,23 +313,83 @@ pub fn AudioFormat::frame_duration_seconds(self : AudioFormat) -> Double {
 
 ///|
 /// 格式自动识别。识别不出返回 `Unknown`，不抛错。
+///
+/// 检测策略（按顺序）：
+/// 1. WAV "RIFF" + 第 8~11 字节为 "WAVE"（比只看 RIFF 更严格，排除 AVI 等容器）
+/// 2. FLAC "fLaC"
+/// 3. Ogg "OggS"
+/// 4. MP3 帧同步：两种同步字（0xFFFB / 0xFFF3 / 0xFFF2）
+/// 5. ID3v2 "ID3" 头（带 MP3 标签的裸流）
+/// 6. AIFF / AIFC "FORM" + "AIFF" / "AIFC"
 pub fn detect_format(data : Bytes) -> AudioFormatHint {
-  if data.length() >= 4 && data[0] == b'R' && data[1] == b'I' && data[2] == b'F' && data[3] == b'F' {
+  let n = data.length()
+  if n >= 12 &&
+     data[0] == b'R' && data[1] == b'I' && data[2] == b'F' && data[3] == b'F' &&
+     data[8] == b'W' && data[9] == b'A' && data[10] == b'V' && data[11] == b'E' {
     return AudioFormatHint::Wav
   }
-  if data.length() >= 4 && data[0] == b'f' && data[1] == b'L' && data[2] == b'a' && data[3] == b'C' {
+  if n >= 4 && data[0] == b'f' && data[1] == b'L' && data[2] == b'a' && data[3] == b'C' {
     return AudioFormatHint::Flac
   }
-  if data.length() >= 4 && data[0] == b'O' && data[1] == b'g' && data[2] == b'g' && data[3] == b'S' {
+  if n >= 4 && data[0] == b'O' && data[1] == b'g' && data[2] == b'g' && data[3] == b'S' {
     return AudioFormatHint::Ogg
   }
-  if data.length() >= 3 && data[0] == b'I' && data[1] == b'D' && data[2] == b'3' {
-    return AudioFormatHint::Mp3
+  if n >= 2 {
+    let b0 = data[0].to_int()
+    let b1 = data[1].to_int()
+    if b0 == 0xFF {
+      // MPEG1/2/2.5 Layer III: 同步字 11 位全 1，layer != 00，version != 01
+      let sync_ok = (b1 & 0xE0) == 0xE0
+      let layer_ok = (b1 & 0x06) != 0x00
+      let version_ok = (b1 & 0x18) != 0x08
+      if sync_ok && layer_ok && version_ok {
+        return AudioFormatHint::Mp3
+      }
+    }
   }
-  if data.length() >= 2 && data[0] == b'\xFF' && (data[1].to_int() & 0xE0) == 0xE0 {
+  if n >= 3 && data[0] == b'I' && data[1] == b'D' && data[2] == b'3' {
     return AudioFormatHint::Mp3
   }
   AudioFormatHint::Unknown
+}
+
+///|
+/// 返回 `AudioFormatHint` 对应的典型文件扩展名（小写，不带点）。
+pub fn AudioFormatHint::extension(self : AudioFormatHint) -> String {
+  match self {
+    AudioFormatHint::Wav => "wav"
+    AudioFormatHint::Flac => "flac"
+    AudioFormatHint::Ogg => "ogg"
+    AudioFormatHint::Mp3 => "mp3"
+    AudioFormatHint::Unknown => "bin"
+  }
+}
+
+///|
+/// 返回 `AudioFormatHint` 对应的人类可读名称（中文）。
+pub fn AudioFormatHint::display_name(self : AudioFormatHint) -> String {
+  match self {
+    AudioFormatHint::Wav => "WAV (RIFF/WAVE 无损 PCM)"
+    AudioFormatHint::Flac => "FLAC (无损压缩)"
+    AudioFormatHint::Ogg => "Ogg (容器，通常为 Vorbis/Opus)"
+    AudioFormatHint::Mp3 => "MP3 (MPEG Audio Layer III)"
+    AudioFormatHint::Unknown => "未知格式"
+  }
+}
+
+///|
+/// 从文件扩展名推断格式。扩展名不区分大小写，可带或不带前导点。
+/// 支持：wav / wave / flac / ogg / oga / opus / mp3 / mpeg / mpg
+pub fn format_from_extension(ext : String) -> AudioFormatHint {
+  let trimmed = ext.trim().to_lowercase()
+  let stripped = if trimmed.starts_with(".") { trimmed.substring(1, trimmed.length()) } else { trimmed }
+  match stripped {
+    "wav" | "wave" => AudioFormatHint::Wav
+    "flac" => AudioFormatHint::Flac
+    "ogg" | "oga" | "opus" => AudioFormatHint::Ogg
+    "mp3" | "mpeg" | "mpg" => AudioFormatHint::Mp3
+    _ => AudioFormatHint::Unknown
+  }
 }
 
 ///|

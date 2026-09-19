@@ -21,3 +21,38 @@ pub(all) suberror AudioError {
   /// 超出资源上限（防止畸形输入导致内存爆炸）。
   LimitExceeded(String)
 } derive(@debug.Debug)
+
+///|
+/// 将错误转为人类可读的中文描述（用于 CLI 和日志打印）。
+pub fn AudioError::describe(self : AudioError) -> String {
+  match self {
+    AudioError::Truncated(offset, needed, available) =>
+      "字节流截断：在偏移 0x\{offset.to_hex()} 处需要 \{needed} 字节，但只剩 \{available} 字节",
+    AudioError::InvalidMagic(msg) =>
+      "魔数/同步字不匹配：\{msg}",
+    AudioError::Unsupported(msg) =>
+      "不支持的特性：\{msg}",
+    AudioError::ChecksumMismatch(expected, actual) =>
+      "校验和失败：期望 0x\{expected.to_hex()}，实际 0x\{actual.to_hex()}",
+    AudioError::LimitExceeded(msg) =>
+      "超出资源上限：\{msg}",
+  }
+}
+
+///|
+/// 错误类型短标签（枚举分支名），用于聚合统计。
+pub fn AudioError::kind(self : AudioError) -> String {
+  match self {
+    AudioError::Truncated(..) => "Truncated",
+    AudioError::InvalidMagic(_) => "InvalidMagic",
+    AudioError::Unsupported(_) => "Unsupported",
+    AudioError::ChecksumMismatch(..) => "ChecksumMismatch",
+    AudioError::LimitExceeded(_) => "LimitExceeded",
+  }
+}
+
+///|
+/// `Show` 实现：直接调用 `describe`，便于字符串插值与 println。
+pub impl Show for AudioError with fn to_string(self : AudioError) -> String {
+  self.describe()
+}
