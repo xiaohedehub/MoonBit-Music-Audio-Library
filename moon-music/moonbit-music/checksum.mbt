@@ -178,3 +178,121 @@ pub fn adler32(data : Bytes) -> Int {
 pub fn crc8_table_size() -> Int {
   crc8_table.length()
 }
+
+// ---------------------------------------------------------------------------
+// 增量式与子范围版本（便于流式解析 / 多次拼接）
+// ---------------------------------------------------------------------------
+
+///|
+/// 增量式 CRC-8：传入上一轮的累加值继续计算。`initial = 0` 等价于全新调用。
+pub fn crc8_update(initial : Int, data : Bytes) -> Int {
+  let mut crc = initial & 0xFF
+  for i = 0; i < data.length(); i = i + 1 {
+    crc = crc8_table[crc ^ data[i].to_int()]
+  }
+  crc
+}
+
+///|
+/// 只在字节范围 `[start, start+length)` 内做 CRC-8。越界抛 `Unsupported`。
+pub fn crc8_range(data : Bytes, start : Int, length : Int) -> Int raise AudioError {
+  if start < 0 || length < 0 || start + length > data.length() {
+    raise AudioError::Unsupported(
+      "crc8_range: 越界 start=\{start} len=\{length} data_len=\{data.length()}",
+    )
+  }
+  let mut crc = 0
+  for i = start..<start + length {
+    crc = crc8_table[crc ^ data[i].to_int()]
+  }
+  crc
+}
+
+///|
+/// 增量式 CRC-16：传入上一轮的累加值继续计算。`initial = 0` 等价于全新调用。
+pub fn crc16_update(initial : Int, data : Bytes) -> Int {
+  let mut crc = initial & 0xFFFF
+  for i = 0; i < data.length(); i = i + 1 {
+    let idx = ((crc >> 8) & 0xFF) ^ data[i].to_int()
+    crc = ((crc << 8) & 0xFFFF) ^ crc16_table[idx]
+  }
+  crc
+}
+
+///|
+/// 只在字节范围 `[start, start+length)` 内做 CRC-16。越界抛 `Unsupported`。
+pub fn crc16_range(data : Bytes, start : Int, length : Int) -> Int raise AudioError {
+  if start < 0 || length < 0 || start + length > data.length() {
+    raise AudioError::Unsupported(
+      "crc16_range: 越界 start=\{start} len=\{length} data_len=\{data.length()}",
+    )
+  }
+  let mut crc = 0
+  for i = start..<start + length {
+    let idx = ((crc >> 8) & 0xFF) ^ data[i].to_int()
+    crc = ((crc << 8) & 0xFFFF) ^ crc16_table[idx]
+  }
+  crc
+}
+
+///|
+/// 只在字节范围 `[start, start+length)` 内做 Ogg CRC-32。越界抛 `Unsupported`。
+pub fn ogg_crc32_range(data : Bytes, start : Int, length : Int) -> Int raise AudioError {
+  if start < 0 || length < 0 || start + length > data.length() {
+    raise AudioError::Unsupported(
+      "ogg_crc32_range: 越界 start=\{start} len=\{length} data_len=\{data.length()}",
+    )
+  }
+  let mut crc = 0
+  for i = start..<start + length {
+    let idx = ((crc >> 24) & 0xFF) ^ data[i].to_int()
+    crc = (crc << 8) ^ ogg_crc32_table[idx]
+  }
+  crc
+}
+
+///|
+/// 增量式 Adler-32：传入上一轮的 (s1, s2) 继续计算，返回新的 (s1, s2)。
+///
+/// 这样调用方可以分批喂数据，最后再 `(s2 % 65521) << 16 | (s1 % 65521)` 合并结果。
+/// 首次调用传 `(1, 0)`（与 `adler32` 的初值一致）。
+pub fn adler32_step(s1_in : Int, s2_in : Int, data : Bytes) -> (Int, Int) {
+  let mut s1 = s1_in
+  let mut s2 = s2_in
+  for i = 0; i < data.length(); i = i + 1 {
+    s1 = s1 + data[i].to_int()
+    s2 = s2 + s1
+    // 每 5552 字节取一次模，避免 s1/s2 无限增长（NMAX 优化）
+    if s1 >= 65521 * 4 {
+      s1 = s1 % 65521
+    }
+    if s2 >= 65521 * 4 {
+      s2 = s2 % 65521
+    }
+  }
+  (s1, s2)
+}
+
+///|
+/// 校验 32 位整数的 CRC 是否匹配；不匹配抛 `ChecksumMismatch`。
+///
+/// 统一把 expected/actual 规范化到无符号 32 位比较（避免负数因符号位看起来不等）。
+pub fn assert_crc32_match(expected : Int, actual : Int, label : String) -> Unit raise AudioError {
+  let exp = expected.to_int64() & 4294967295L
+  let act = actual.to_int64() & 4294967295L
+  if exp != act {
+    raise AudioError::ChecksumMismatch(expected=exp.to_int(), actual=act.to_int())
+  }
+  ignore(label)
+}
+
+///|
+/// 校验 16 位整数的 CRC 是否匹配；不匹配抛 `ChecksumMismatch`。
+pub fn assert_crc16_match(expected : Int, actual : Int, label : String) -> Unit raise AudioError {
+  let exp = expected & 0xFFFF
+  let act = actual & 0xFFFF
+  if exp != act {
+    raise AudioError::ChecksumMismatch(expected=exp, actual=act)
+  }
+  ignore(label)
+}
