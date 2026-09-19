@@ -275,6 +275,24 @@ pub fn first_difference(a : Array[Int], b : Array[Int]) -> Int {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 内部热点：所有需要 Int64 求和的函数共享这一个求和内核
+// ---------------------------------------------------------------------------
+
+///|
+/// 对样本做 Int64 求和（零分配、单次遍历）。
+///
+/// 这是 dc_offset / dc_offset_double / remove_dc_offset 的共享内核。
+/// 之前每个函数都各自写了一遍同样的 for 循环，现在统一走这里，
+/// 三处改动就会同时受益，也减少了 L1 I-cache 的压力。
+fn pcm_sum_int64(samples : Array[Int]) -> Int64 {
+  let mut sum : Int64 = 0L
+  for s in samples {
+    sum = sum + s.to_int64()
+  }
+  sum
+}
+
 ///|
 /// 直流（DC）偏移：样本算术平均值。空数组返回 0。
 ///
@@ -286,10 +304,7 @@ pub fn dc_offset(samples : Array[Int]) -> Int64 {
   if n == 0 {
     return 0L
   }
-  let mut sum : Int64 = 0L
-  for s in samples {
-    sum = sum + s.to_int64()
-  }
+  let sum = pcm_sum_int64(samples)
   (sum << 32).div(n.to_int64())
 }
 
@@ -300,10 +315,7 @@ pub fn dc_offset_double(samples : Array[Int]) -> Double {
   if n == 0 {
     return 0.0
   }
-  let mut sum : Int64 = 0L
-  for s in samples {
-    sum = sum + s.to_int64()
-  }
+  let sum = pcm_sum_int64(samples)
   sum.to_double() / n.to_double()
 }
 
@@ -317,10 +329,7 @@ pub fn remove_dc_offset(samples : Array[Int]) -> Array[Int] {
   if n == 0 {
     return []
   }
-  let mut sum : Int64 = 0L
-  for s in samples {
-    sum = sum + s.to_int64()
-  }
+  let sum = pcm_sum_int64(samples)
   // mean = sum / n，使用定点（Q32）实现四舍五入
   let mean_q32 = if sum >= 0L {
     (sum << 32).div(n.to_int64()) + (1L << 31)
