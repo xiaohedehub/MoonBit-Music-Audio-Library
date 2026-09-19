@@ -77,6 +77,42 @@ pub fn PcmBuffer::empty() -> PcmBuffer {
 }
 
 ///|
+/// 总样本数（含所有声道）。
+pub fn PcmBuffer::len(self : PcmBuffer) -> Int {
+  self.samples.length()
+}
+
+///|
+/// 采样率（Hz）。
+pub fn PcmBuffer::sample_rate(self : PcmBuffer) -> Int {
+  self.sample_rate
+}
+
+///|
+/// 声道数。
+pub fn PcmBuffer::channels(self : PcmBuffer) -> Int {
+  self.channels
+}
+
+///|
+/// 按帧+声道下标访问样本。越界时行为同 `Array[]`。
+pub fn PcmBuffer::get(self : PcmBuffer, frame : Int, ch : Int) -> Int {
+  self.samples[frame * self.channels + ch]
+}
+
+///|
+/// 按帧+声道下标写入样本。
+pub fn PcmBuffer::set(self : PcmBuffer, frame : Int, ch : Int, value : Int) -> Unit {
+  self.samples[frame * self.channels + ch] = value
+}
+
+///|
+/// 按只读视图方式查看内部样本数组，避免拷贝。
+pub fn PcmBuffer::as_view(self : PcmBuffer) -> ArrayView[Int] {
+  self.samples.view()
+}
+
+///|
 /// 音频流格式描述。
 pub(all) struct AudioFormat {
   sample_rate : Int
