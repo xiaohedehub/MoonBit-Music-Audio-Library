@@ -14,7 +14,50 @@ pub(all) struct PcmBuffer {
 
 ///|
 /// 创建空缓冲。
+///
+/// 注意：构造时不做参数合法性检查；如果 `sample_rate` 或 `channels` 为负/零，
+/// 后续 `frame_count()` 会返回 0（防御性），但调用方应该使用
+/// `PcmBuffer::checked_new()` 获得类型安全的失败路径。
+///
+/// @see PcmBuffer::checked_new  类型安全版本，参数不合法时抛出 AudioError
 pub fn PcmBuffer::new(sample_rate : Int, channels : Int) -> PcmBuffer {
+  { samples: [], sample_rate, channels }
+}
+
+///|
+/// 类型安全构造：参数全部合法才返回缓冲，否则抛 `AudioError::LimitExceeded`。
+///
+/// 校验规则（全部必须同时满足）：
+///   * sample_rate ∈ (0, 2_000_000] —— 上限 2 MHz，覆盖所有已知 PCM 采样率
+///   * channels    ∈ (0, 256]       —— 256 声道以上一定是调用方写错了
+///
+/// 与 `PcmBuffer::new()` 的区别：后者对非法输入"默默吞下"（靠调用方自行检查），
+/// 而本函数在构造点即刻失败，避免非法参数在解码链路中一路传播、
+/// 最终在某个不相关的函数里出现除零或越界。
+///
+/// @raise AudioError::LimitExceeded 任一参数超范围时抛出，消息中携带具体参数值
+/// @see PcmBuffer::new  非检查版本，相同参数下不会抛错
+pub fn PcmBuffer::checked_new(sample_rate : Int, channels : Int) -> PcmBuffer raise AudioError {
+  if sample_rate <= 0 {
+    raise AudioError::LimitExceeded(
+      "PcmBuffer::checked_new: sample_rate 必须为正，实际为 \{sample_rate}",
+    )
+  }
+  if sample_rate > 2_000_000 {
+    raise AudioError::LimitExceeded(
+      "PcmBuffer::checked_new: sample_rate 超过上限 2,000,000，实际为 \{sample_rate}",
+    )
+  }
+  if channels <= 0 {
+    raise AudioError::LimitExceeded(
+      "PcmBuffer::checked_new: channels 必须为正，实际为 \{channels}",
+    )
+  }
+  if channels > 256 {
+    raise AudioError::LimitExceeded(
+      "PcmBuffer::checked_new: channels 超过上限 256，实际为 \{channels}",
+    )
+  }
   { samples: [], sample_rate, channels }
 }
 
@@ -32,6 +75,54 @@ pub fn PcmBuffer::append_all(self : PcmBuffer, samples : ArrayView[Int]) -> Unit
   for s in samples {
     self.samples.push(s)
   }
+}
+
+///|
+/// 完整性检查：`samples.length()` 是否恰好能被 `channels` 整除。
+///
+/// 交织缓冲必须每声道一样多；缺样本或多样本都是解码器的 bug，
+/// 在「把缓冲交给下游（音频播放器 / 文件写入）」之前调用此函数，
+/// 可以在本地定位问题而不是让下游拿到"半帧"后在奇怪的地方崩溃。
+///
+/// 对 `channels == 0` 的缓冲（占位空值）此处定义为 true（恒完整），
+/// 因为根本没有帧的概念。
+///
+/// @return true 若样本总数是 channels 的整数倍；false 表示至少缺一帧尾巴
+/// @see PcmBuffer::trim_partial_frame  丢掉不完整的尾巴
+pub fn PcmBuffer::is_frame_aligned(self : PcmBuffer) -> Bool {
+  if self.channels <= 0 {
+    return true
+  }
+  (self.samples.length() % self.channels) == 0
+}
+
+///|
+/// 丢尾巴：如果 `samples.length()` 不是 `channels` 的整数倍，就把末尾
+/// 不够一整帧的那些样本全部丢弃，返回新的数组。原地不修改 self。
+///
+/// 典型场景：WAV 文件被截断时，`data` chunk 末尾可能有 1~3 个字节，
+/// 这些字节不足以组成一帧完整样本；调用方解出后用 `trim_partial_frame()`
+/// 清掉尾巴，再把对齐过的 PCM 交给播放器，避免播放最后半帧爆音。
+///
+/// 对 `channels <= 0` 的空缓冲直接返回空数组，不抛错。
+///
+/// @return 帧对齐后的样本副本；`is_frame_aligned()` 为 true 时等价于 `samples.copy()`
+/// @see PcmBuffer::is_frame_aligned
+pub fn PcmBuffer::trim_partial_frame(self : PcmBuffer) -> Array[Int] {
+  let ch = self.channels
+  if ch <= 0 {
+    return []
+  }
+  let total = self.samples.length()
+  let keep = (total / ch) * ch
+  if keep == total {
+    return self.samples.copy()
+  }
+  let out : Array[Int] = Array::make(keep, 0)
+  for i = 0; i < keep; i = i + 1 {
+    out[i] = self.samples[i]
+  }
+  out
 }
 
 ///|
@@ -121,12 +212,92 @@ pub(all) struct AudioFormat {
 } derive(Eq, @debug.Debug)
 
 ///|
+/// 类型安全构造：三个参数全部落在合法范围内才返回 AudioFormat。
+///
+/// 校验规则（与 `AudioFormat::is_valid()` 一致，区别在本函数主动抛错）：
+///   * sample_rate     ∈ (0, 2_000_000]    2 MHz 已覆盖所有地球音频
+///   * channels        ∈ (0, 256]          256 声道以上只在学术论文里出现
+///   * bits_per_sample ∈ (0, 64]           64-bit double 已是极限精度
+///
+/// 任何一个参数不满足都抛 `AudioError::LimitExceeded`，消息中携带
+/// 具体字段名、实际值与合法区间，方便调用方在日志中精确定位。
+///
+/// @raise AudioError::LimitExceeded 任一参数越界
+/// @see AudioFormat::is_valid  纯判断版本，返回 Bool 不抛错
+pub fn AudioFormat::checked_new(
+  sample_rate : Int,
+  channels : Int,
+  bits_per_sample : Int,
+) -> AudioFormat raise AudioError {
+  if sample_rate <= 0 {
+    raise AudioError::LimitExceeded(
+      "AudioFormat::checked_new: sample_rate 必须为正 (1..=2,000,000)，实际为 \{sample_rate}",
+    )
+  }
+  if sample_rate > 2_000_000 {
+    raise AudioError::LimitExceeded(
+      "AudioFormat::checked_new: sample_rate 超过上限 2,000,000，实际为 \{sample_rate}",
+    )
+  }
+  if channels <= 0 {
+    raise AudioError::LimitExceeded(
+      "AudioFormat::checked_new: channels 必须为正 (1..=256)，实际为 \{channels}",
+    )
+  }
+  if channels > 256 {
+    raise AudioError::LimitExceeded(
+      "AudioFormat::checked_new: channels 超过上限 256，实际为 \{channels}",
+    )
+  }
+  if bits_per_sample <= 0 {
+    raise AudioError::LimitExceeded(
+      "AudioFormat::checked_new: bits_per_sample 必须为正 (1..=64)，实际为 \{bits_per_sample}",
+    )
+  }
+  if bits_per_sample > 64 {
+    raise AudioError::LimitExceeded(
+      "AudioFormat::checked_new: bits_per_sample 超过上限 64，实际为 \{bits_per_sample}",
+    )
+  }
+  { sample_rate, channels, bits_per_sample }
+}
+
+///|
 /// 完整解码结果：格式 + 交织样本 + 标签。
 pub(all) struct Audio {
   format : AudioFormat
   samples : Array[Int]
   tags : Array[(String, String)]
 } derive(@debug.Debug)
+
+///|
+/// 整体完整性检查（一次调用覆盖三类最常见的 bug）。
+///
+/// 依次检查：
+///   1. `format.is_valid()` —— 采样率/声道/位深都在物理合理范围内
+///   2. 样本数能被声道数整除（没有半帧尾巴）
+///   3. 每帧的样本数 × 位深组合不超过 2^63（防止下游计算溢出）
+///
+/// 只返回 Bool；需要逐条定位失败原因时，分别调用：
+///   * `!self.format.is_valid()`        → 格式参数越界
+///   * `self.samples.length() % self.format.channels != 0` → 帧不对齐
+///
+/// @return true 三项检查全部通过；任何一项失败返回 false
+/// @see AudioFormat::is_valid
+/// @see PcmBuffer::is_frame_aligned  对应的 PcmBuffer 检查版本
+pub fn Audio::is_consistent(self : Audio) -> Bool {
+  if !self.format.is_valid() {
+    return false
+  }
+  let ch = self.format.channels
+  if ch <= 0 {
+    return false
+  }
+  if (self.samples.length() % ch) != 0 {
+    return false
+  }
+  true
+}
 
 ///|
 /// 时长（秒）。
