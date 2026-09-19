@@ -180,6 +180,53 @@ pub impl Show for AudioFormat with fn to_string(self : AudioFormat) -> String {
 }
 
 ///|
+/// 常见采样率白名单（8k ~ 192k）。用于 `is_standard` 验证。
+const STANDARD_SAMPLE_RATES : Array[Int] = [
+  8000, 11025, 16000, 22050, 24000, 32000,
+  44100, 48000, 88200, 96000, 176400, 192000,
+]
+
+///|
+/// 验证格式参数在物理合理范围内（不做白名单检查）。
+pub fn AudioFormat::is_valid(self : AudioFormat) -> Bool {
+  self.sample_rate > 0 &&
+  self.channels > 0 && self.channels <= 256 &&
+  self.bits_per_sample > 0 && self.bits_per_sample <= 64
+}
+
+///|
+/// 验证是否为「标准」PCM 配置：采样率 ∈ 常见白名单、声道 1/2、位深 8/16/24/32。
+pub fn AudioFormat::is_standard(self : AudioFormat) -> Bool {
+  if !self.is_valid() {
+    return false
+  }
+  let rate_ok = STANDARD_SAMPLE_RATES.exists(fn (r) { r == self.sample_rate })
+  let ch_ok = self.channels == 1 || self.channels == 2
+  let bits_ok =
+    self.bits_per_sample == 8 ||
+    self.bits_per_sample == 16 ||
+    self.bits_per_sample == 24 ||
+    self.bits_per_sample == 32
+  rate_ok && ch_ok && bits_ok
+}
+
+///|
+/// 每帧字节数（仅对整数 PCM 有意义；float/压缩格式调用方自行判断）。
+pub fn AudioFormat::frame_bytes(self : AudioFormat) -> Int {
+  (self.bits_per_sample / 8) * self.channels
+}
+
+///|
+/// 每帧（N 声道 × 1 采样点）的时长（秒）。
+pub fn AudioFormat::frame_duration_seconds(self : AudioFormat) -> Double {
+  if self.sample_rate <= 0 {
+    0.0
+  } else {
+    1.0 / self.sample_rate.to_double()
+  }
+}
+
+///|
 /// 格式自动识别。识别不出返回 `Unknown`，不抛错。
 pub fn detect_format(data : Bytes) -> AudioFormatHint {
   if data.length() >= 4 && data[0] == b'R' && data[1] == b'I' && data[2] == b'F' && data[3] == b'F' {
