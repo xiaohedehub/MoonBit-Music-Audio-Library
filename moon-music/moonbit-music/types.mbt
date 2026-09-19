@@ -273,6 +273,13 @@ const STANDARD_SAMPLE_RATES : Array[Int] = [
 
 ///|
 /// 验证格式参数在物理合理范围内（不做白名单检查）。
+///
+/// 只检查"数学上可能存在"的下限/上限，不检查硬件或常见格式：
+/// 192.5 kHz、3 声道、20 bit 这样的配置都会通过 `is_valid`。
+/// 需要"主流声卡可直接播放"的配置判断时改用 `is_standard`。
+///
+/// @return true 当且仅当 sample_rate > 0、0 < channels <= 256、0 < bits_per_sample <= 64
+/// @see AudioFormat::is_standard
 pub fn AudioFormat::is_valid(self : AudioFormat) -> Bool {
   self.sample_rate > 0 &&
   self.channels > 0 && self.channels <= 256 &&
@@ -281,6 +288,23 @@ pub fn AudioFormat::is_valid(self : AudioFormat) -> Bool {
 
 ///|
 /// 验证是否为「标准」PCM 配置：采样率 ∈ 常见白名单、声道 1/2、位深 8/16/24/32。
+///
+/// 先调用 `is_valid` 做快路径兜底；三个子条件用 && 短路，先失败的那个不执行。
+///
+/// 采样率白名单 = [8k, 11.025k, 16k, 22.05k, 24k, 32k, 44.1k, 48k, 88.2k, 96k, 176.4k, 192k]
+/// 声道 = 1 (mono) / 2 (stereo, 交织 L R L R ...)
+/// 位深 = 8 (unsigned, WAV 特有) / 16 / 24 / 32
+///
+/// @example
+/// ```text
+/// is_standard(44100, 2, 16) = true     // CDDA 品质，主流
+/// is_standard(48000, 2, 24) = true     // 电影同期
+/// is_standard(44100, 6, 16) = false    // 5.1 多声道
+/// is_standard(22050, 1, 12) = false    // 非 2 次幂位深
+/// ```
+/// @return 属于上述标准配置集合返回 true
+/// @see AudioFormat::is_valid
+/// @see STANDARD_SAMPLE_RATES
 pub fn AudioFormat::is_standard(self : AudioFormat) -> Bool {
   if !self.is_valid() {
     return false
@@ -297,12 +321,39 @@ pub fn AudioFormat::is_standard(self : AudioFormat) -> Bool {
 
 ///|
 /// 每帧字节数（仅对整数 PCM 有意义；float/压缩格式调用方自行判断）。
+///
+/// `bits_per_sample / 8` 使用整数除法，**向下截断**。
+/// 对非 8 对齐的位深（如 12-bit、20-bit）调用方需自己处理尾部
+/// 打包位（通常在 WAV/FALC 里都是 8 的倍数，不会踩到此坑）。
+///
+/// @example
+/// ```text
+/// frame_bytes(44100, 2, 16) = 2 * 2 = 4
+/// frame_bytes(48000, 1, 24) = 1 * 3 = 3
+/// frame_bytes(8000,  1, 8)  = 1 * 1 = 1
+/// ```
+/// @return `floor(bits_per_sample / 8) * channels`
+/// @see AudioFormat::frame_duration_seconds
 pub fn AudioFormat::frame_bytes(self : AudioFormat) -> Int {
   (self.bits_per_sample / 8) * self.channels
 }
 
 ///|
 /// 每帧（N 声道 × 1 采样点）的时长（秒）。
+///
+/// `sample_rate <= 0` 返回 0.0，避免除以零和 `Duration::infinity` 之类的语义混乱。
+/// 结果是精确有理数 `1 / sample_rate` 的 `Double` 近似；对 44100 Hz 误差
+/// 约 2e-17 秒，完全可以忽略（1 亿帧累计误差 < 2 ns）。
+///
+/// @example
+/// ```text
+/// frame_duration_seconds(44100 Hz) ≈ 2.267_573_696_145_124_7e-5 s
+/// frame_duration_seconds(48000 Hz) = 2.083_333_333_333_333_3e-5 s
+/// frame_duration_seconds(0 Hz)     = 0.0 (防御性)
+/// ```
+/// @return `1.0 / sample_rate` 或防御性的 0.0
+/// @see AudioFormat::frame_bytes
+/// @see Audio::duration_seconds
 pub fn AudioFormat::frame_duration_seconds(self : AudioFormat) -> Double {
   if self.sample_rate <= 0 {
     0.0
@@ -314,13 +365,24 @@ pub fn AudioFormat::frame_duration_seconds(self : AudioFormat) -> Double {
 ///|
 /// 格式自动识别。识别不出返回 `Unknown`，不抛错。
 ///
-/// 检测策略（按顺序）：
-/// 1. WAV "RIFF" + 第 8~11 字节为 "WAVE"（比只看 RIFF 更严格，排除 AVI 等容器）
-/// 2. FLAC "fLaC"
-/// 3. Ogg "OggS"
-/// 4. MP3 帧同步：两种同步字（0xFFFB / 0xFFF3 / 0xFFF2）
-/// 5. ID3v2 "ID3" 头（带 MP3 标签的裸流）
-/// 6. AIFF / AIFC "FORM" + "AIFF" / "AIFC"
+/// 检测策略（按优先级降序，命中即短路返回）：
+/// 1. **WAV**：前 4 字节 `"RIFF"` 且 8..12 字节为 `"WAVE"` —— 比只看 RIFF 更严格，
+///    可以排除 AVI、ANI、RM 等同样以 RIFF 开头的非音频容器。
+/// 2. **FLAC**：前 4 字节 `"fLaC"` —— FLAC 规范的 magic word，字节级确定无歧义。
+/// 3. **Ogg**：前 4 字节 `"OggS"` —— Ogg 物理页头首字段，所有 Ogg 容器共享。
+/// 4. **MP3 (帧同步)**：首字节 0xFF && `(b1 & 0xE0) == 0xE0` (11 位同步字) 且
+///    layer != 00 && version != 01。覆盖 MPEG-1/2/2.5 的 Layer I/II/III。
+/// 5. **MP3 (ID3 前置标签)**：前 3 字节 `"ID3"` —— 带前置标签的裸 MP3 流
+///    （90% 的商业 MP3 都是这种形态）。
+/// 6. **都不命中** → `Unknown`。
+///
+/// 复杂度：O(1)，最多只读前 12 字节。输入长度不足 12 字节时自动降级到对应分支的
+/// 下限检查（比如 n=3 时只走 ID3 和 Unknown 两条路），不会越界。
+///
+/// @param data 内存中完整或部分音频字节流；可以是文件前 N 字节（通常读 12 字节即够）
+/// @return AudioFormatHint 枚举（Wav / Flac / Ogg / Mp3 / Unknown）
+/// @see AudioFormatHint::extension
+/// @see format_from_extension
 pub fn detect_format(data : Bytes) -> AudioFormatHint {
   let n = data.length()
   if n >= 12 &&
@@ -355,6 +417,24 @@ pub fn detect_format(data : Bytes) -> AudioFormatHint {
 
 ///|
 /// 返回 `AudioFormatHint` 对应的典型文件扩展名（小写，不带点）。
+///
+/// 扩展名是**约定俗成**的"推荐使用"值，不是格式唯一标识：
+///   - Ogg Vorbis 也可能叫 `.oga`；
+///   - MP3 也可能是 `.mpga` / `.mpeg`；
+///   - `Unknown` 统一用 `.bin`，避免乱起名字误导调用方。
+/// 需要反向查找（扩展名 → 格式）用 `format_from_extension`。
+///
+/// @example
+/// ```text
+/// Wav.extension()     = "wav"
+/// Flac.extension()    = "flac"
+/// Ogg.extension()     = "ogg"    (Opus-in-Ogg 默认也用 .ogg，除非调用方自行替换)
+/// Mp3.extension()     = "mp3"
+/// Unknown.extension() = "bin"
+/// ```
+/// @return 小写、不含前导点的文件扩展名
+/// @see format_from_extension
+/// @see AudioFormatHint::display_name
 pub fn AudioFormatHint::extension(self : AudioFormatHint) -> String {
   match self {
     AudioFormatHint::Wav => "wav"
@@ -367,6 +447,20 @@ pub fn AudioFormatHint::extension(self : AudioFormatHint) -> String {
 
 ///|
 /// 返回 `AudioFormatHint` 对应的人类可读名称（中文）。
+///
+/// 文本面向最终用户显示，包含"格式是什么 + 常见用途"两部分信息，
+/// 直接出现在 CLI 输出或错误对话框里不需要二次加工。
+///
+/// @example
+/// ```text
+/// Wav.display_name() = "WAV (RIFF/WAVE 无损 PCM)"
+/// Flac.display_name() = "FLAC (无损压缩)"
+/// Ogg.display_name()  = "Ogg (容器，通常为 Vorbis/Opus)"
+/// Mp3.display_name()  = "MP3 (MPEG Audio Layer III)"
+/// Unknown.display_name() = "未知格式"
+/// ```
+/// @return 中文格式说明字符串，可直接打印
+/// @see AudioFormatHint::extension
 pub fn AudioFormatHint::display_name(self : AudioFormatHint) -> String {
   match self {
     AudioFormatHint::Wav => "WAV (RIFF/WAVE 无损 PCM)"
@@ -379,7 +473,31 @@ pub fn AudioFormatHint::display_name(self : AudioFormatHint) -> String {
 
 ///|
 /// 从文件扩展名推断格式。扩展名不区分大小写，可带或不带前导点。
-/// 支持：wav / wave / flac / ogg / oga / opus / mp3 / mpeg / mpg
+///
+/// 识别表：
+///   WAV  ← wav / wave
+///   FLAC ← flac
+///   Ogg  ← ogg / oga / opus
+///   MP3  ← mp3 / mpeg / mpg
+///   其他  → Unknown
+///
+/// 设计取舍：故意只列**最常见**的别名，不把所有 IANA 注册名都放进来；
+/// 罕见扩展名（如 `.mp2` / `.m2a`）走 Unknown，由调用方二次判定，避免误伤。
+/// 输入会被 `trim()` + `.` 去前缀 + 小写标准化，调用方不必做预处理。
+///
+/// @example
+/// ```text
+/// format_from_extension("WAV")         = Wav
+/// format_from_extension(".mp3")        = Mp3
+/// format_from_extension("  .Flac ")    = Flac   (trim + 去点 + 小写)
+/// format_from_extension("opus")        = Ogg    (Opus-in-Ogg 容器归 Ogg 类)
+/// format_from_extension("xyz")         = Unknown
+/// format_from_extension("")            = Unknown
+/// ```
+/// @param ext 原始扩展名（可能带点、大写、前后空格）
+/// @return AudioFormatHint 枚举；无法识别时恒为 `Unknown`，从不抛错
+/// @see detect_format
+/// @see AudioFormatHint::extension
 pub fn format_from_extension(ext : String) -> AudioFormatHint {
   let trimmed = ext.trim().to_lowercase()
   let stripped = if trimmed.starts_with(".") { trimmed.substring(1, trimmed.length()) } else { trimmed }
