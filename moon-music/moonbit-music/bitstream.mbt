@@ -40,6 +40,50 @@ pub fn BitReader::bit_pos(self : BitReader) -> Int {
   pos
 }
 
+fn bit_mask(width : Int) -> Int {
+  if width <= 0 {
+    0
+  } else if width >= 32 {
+    -1
+  } else {
+    (1 << width) - 1
+  }
+}
+
+fn require_range_bits(n : Int, lo : Int, hi : Int, name : String) -> Unit raise AudioError {
+  if n < lo || n > hi {
+    raise AudioError::Unsupported(
+      "BitReader::\(name): 位宽必须在 \(lo)..=\(hi) 之间，实际为 \(n)",
+    )
+  }
+}
+
+fn require_non_negative(n : Int, name : String) -> Unit raise AudioError {
+  if n < 0 {
+    raise AudioError::Unsupported("BitReader::\(name): 长度不能为负，实际为 \(n)")
+  }
+}
+
+fn require_byte_aligned(self : BitReader, name : String) -> Unit raise AudioError {
+  if !self.is_byte_aligned() {
+    raise AudioError::Unsupported(
+      "BitReader::\(name): 要求字节对齐，当前位偏移为 \(self.bit_pos)",
+    )
+  }
+}
+
+fn check_truncated_bytes(self : BitReader, n : Int) -> Unit raise AudioError {
+  let byte_pos = self.bit_pos >> 3
+  let avail_bytes = self.data.length() - byte_pos
+  if avail_bytes < n {
+    raise AudioError::Truncated(
+      offset=self.bit_pos,
+      needed=n * 8,
+      available=avail_bytes * 8,
+    )
+  }
+}
+
 ///|
 /// MSB-first 读取 `n` 位（`0 <= n <= 64`）。
 ///
@@ -49,11 +93,7 @@ pub fn BitReader::bit_pos(self : BitReader) -> Int {
 /// 返回类型是 32 位有符号的 `Int`，因此 `n > 32` 时只保留读到的 64 位里的
 /// **低 32 位**。需要完整的宽值请改用 `read_utf8_int` 之类的 Int64 接口。
 pub fn BitReader::read_bits(self : BitReader, n : Int) -> Int raise AudioError {
-  if n < 0 || n > 64 {
-    raise AudioError::Unsupported(
-      "BitReader::read_bits: 位宽必须在 0..=64 之间，实际为 \{n}",
-    )
-  }
+  require_range_bits(n, 0, 64, "read_bits")
   if n == 0 {
     return 0
   }
@@ -65,7 +105,6 @@ pub fn BitReader::read_bits(self : BitReader, n : Int) -> Int raise AudioError {
       available~,
     )
   }
-  // 累积到 Int64：Int 只有 32 位，直接左移会在 n > 32 时丢位。
   let mut acc : Int64 = 0
   let mut pos = self.bit_pos
   let stop = pos + n
@@ -75,9 +114,8 @@ pub fn BitReader::read_bits(self : BitReader, n : Int) -> Int raise AudioError {
     if take > stop - pos {
       take = stop - pos
     }
-    // 本字节里从 bit_off 起、共 take 位，右移到最低位后取出。
     let byte = self.data[pos >> 3].to_int()
-    let chunk = (byte >> (8 - bit_off - take)) & ((1 << take) - 1)
+    let chunk = (byte >> (8 - bit_off - take)) & bit_mask(take)
     acc = (acc << take) | chunk.to_int64()
     pos = pos + take
   }
@@ -91,11 +129,7 @@ pub fn BitReader::read_bits(self : BitReader, n : Int) -> Int raise AudioError {
 /// `n == 0` 返回 0。注意 `Int` 是 32 位有符号类型，所以 `read_uint(32)` 在
 /// 最高位为 1 时会得到负数（位模式原样保留，语义上等价于无符号值）。
 pub fn BitReader::read_uint(self : BitReader, n : Int) -> Int raise AudioError {
-  if n < 0 || n > 32 {
-    raise AudioError::Unsupported(
-      "BitReader::read_uint: 位宽必须在 0..=32 之间，实际为 \{n}",
-    )
-  }
+  require_range_bits(n, 0, 32, "read_uint")
   self.read_bits(n)
 }
 
@@ -104,21 +138,17 @@ pub fn BitReader::read_uint(self : BitReader, n : Int) -> Int raise AudioError {
 ///
 /// `read_int(3)` 对 `0b101` 返回 `-3`；`read_int(32)` 直接返回 32 位位模式。
 pub fn BitReader::read_int(self : BitReader, n : Int) -> Int raise AudioError {
-  if n < 0 || n > 32 {
-    raise AudioError::Unsupported(
-      "BitReader::read_int: 位宽必须在 0..=32 之间，实际为 \{n}",
-    )
-  }
+  require_range_bits(n, 0, 32, "read_int")
   if n == 0 {
     return 0
   }
   let raw = self.read_bits(n)
-  // n == 32 时 1 << 32 会溢出 Int，而 raw 本身就是补码表示，直接返回。
   if n >= 32 {
     return raw
   }
-  if (raw & (1 << (n - 1))) != 0 {
-    raw - (1 << n)
+  let sign_bit = 1 << (n - 1)
+  if (raw & sign_bit) != 0 {
+    raw - (sign_bit << 1)
   } else {
     raw
   }
@@ -148,9 +178,7 @@ pub fn BitReader::read_unary(self : BitReader) -> Int raise AudioError {
 ///|
 /// 丢弃 `n` 位。剩余位不足时抛 `Truncated`；`n == 0` 是空操作。
 pub fn BitReader::skip_bits(self : BitReader, n : Int) -> Unit raise AudioError {
-  if n < 0 {
-    raise AudioError::Unsupported("BitReader::skip_bits: 位宽不能为负，实际为 \{n}")
-  }
+  require_non_negative(n, "skip_bits")
   let available = self.remaining()
   if available < n {
     raise AudioError::Truncated(
@@ -210,7 +238,7 @@ pub fn BitReader::read_utf8_int(self : BitReader) -> Int64 raise AudioError {
       "BitReader::read_utf8_int: 非法前导字节 \{first}（前导 1 的个数为 \{total_bytes}）",
     )
   }
-  let mut value : Int64 = (first & ((1 << (7 - total_bytes)) - 1)).to_int64()
+  let mut value : Int64 = (first & bit_mask(7 - total_bytes)).to_int64()
   let mut i = 1
   while i < total_bytes {
     let cont = self.read_bits(8)
@@ -332,23 +360,10 @@ pub fn BitReader::is_byte_aligned(self : BitReader) -> Bool {
 ///
 /// 游标不在边界上抛 `Unsupported`；字节不够抛 `Truncated`。
 pub fn BitReader::read_bytes(self : BitReader, n : Int) -> Bytes raise AudioError {
-  if n < 0 {
-    raise AudioError::Unsupported("BitReader::read_bytes: 长度不能为负，实际为 \{n}")
-  }
-  if !self.is_byte_aligned() {
-    raise AudioError::Unsupported(
-      "BitReader::read_bytes: 要求字节对齐，当前位偏移为 \{self.bit_pos}",
-    )
-  }
+  require_non_negative(n, "read_bytes")
+  require_byte_aligned(self, "read_bytes")
+  check_truncated_bytes(self, n)
   let byte_pos = self.bit_pos >> 3
-  let avail_bytes = self.data.length() - byte_pos
-  if avail_bytes < n {
-    raise AudioError::Truncated(
-      offset=self.bit_pos,
-      needed=n * 8,
-      available=avail_bytes * 8,
-    )
-  }
   let out = Buffer()
   for i = 0; i < n; i = i + 1 {
     out.write_byte(self.data[byte_pos + i])
@@ -360,23 +375,9 @@ pub fn BitReader::read_bytes(self : BitReader, n : Int) -> Bytes raise AudioErro
 ///|
 /// 跳过 `n` 个完整字节（要求字节对齐）。
 pub fn BitReader::skip_bytes(self : BitReader, n : Int) -> Unit raise AudioError {
-  if n < 0 {
-    raise AudioError::Unsupported("BitReader::skip_bytes: 长度不能为负，实际为 \{n}")
-  }
-  if !self.is_byte_aligned() {
-    raise AudioError::Unsupported(
-      "BitReader::skip_bytes: 要求字节对齐，当前位偏移为 \{self.bit_pos}",
-    )
-  }
-  let byte_pos = self.bit_pos >> 3
-  let avail_bytes = self.data.length() - byte_pos
-  if avail_bytes < n {
-    raise AudioError::Truncated(
-      offset=self.bit_pos,
-      needed=n * 8,
-      available=avail_bytes * 8,
-    )
-  }
+  require_non_negative(n, "skip_bytes")
+  require_byte_aligned(self, "skip_bytes")
+  check_truncated_bytes(self, n)
   self.bit_pos = self.bit_pos + n * 8
 }
 
@@ -436,14 +437,18 @@ pub fn BitWriter::pad_to_byte(self : BitWriter) -> Unit {
   }
 }
 
+fn writer_require_byte_aligned(self : BitWriter, name : String) -> Unit raise AudioError {
+  if (self.bit_len & 7) != 0 {
+    raise AudioError::Unsupported(
+      "BitWriter::\(name): 要求字节对齐，当前位长度为 \(self.bit_len)",
+    )
+  }
+}
+
 ///|
 /// 写入 n 个完整字节（作为 8 位 MSB-first 串），要求当前已经在字节边界。
 pub fn BitWriter::write_bytes(self : BitWriter, bytes : Bytes) -> Unit raise AudioError {
-  if (self.bit_len & 7) != 0 {
-    raise AudioError::Unsupported(
-      "BitWriter::write_bytes: 要求字节对齐，当前位长度为 \{self.bit_len}",
-    )
-  }
+  writer_require_byte_aligned(self, "write_bytes")
   for b in bytes {
     self.write_bits(b.to_int(), 8)
   }
