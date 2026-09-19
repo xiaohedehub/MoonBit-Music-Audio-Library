@@ -159,6 +159,76 @@ fn VorbisBitReader::skip_bytes(self : VorbisBitReader, n : Int) -> Unit raise Au
   self.byte_pos = self.byte_pos + n
 }
 
+///|
+/// 读 n 个完整字节，要求当前位游标已经在字节边界。
+///
+/// 返回新分配的 `Bytes`，长度恰好为 n；越界抛 `Truncated`。
+fn VorbisBitReader::read_bytes(self : VorbisBitReader, n : Int) -> Bytes raise AudioError {
+  if self.bit_pos != 0 {
+    raise AudioError::Unsupported("vorbis: read_bytes 需要在字节边界调用")
+  }
+  let avail = self.bits_left() / 8
+  if n > avail {
+    raise AudioError::Truncated(offset=self.byte_pos, needed=n, available=avail)
+  }
+  let out = Buffer()
+  for i in 0..<n {
+    out.write_byte(self.data[self.byte_pos + i])
+  }
+  self.byte_pos = self.byte_pos + n
+  out.to_bytes()
+}
+
+///|
+/// 把位游标复位到给定的字节+位偏移。用于「先试读，失败后回退」场景。
+///
+/// 越界抛 `Truncated`；但越界不会把游标放在非法状态，而是保持原值不变。
+fn VorbisBitReader::seek(self : VorbisBitReader, byte : Int, bit : Int) -> Unit raise AudioError {
+  if bit < 0 || bit > 7 {
+    raise AudioError::Unsupported("vorbis: seek bit 必须属于 0..7，实际 \{bit}")
+  }
+  let total_bits = self.data.length() * 8
+  let target = byte * 8 + bit
+  if target > total_bits {
+    raise AudioError::Truncated(offset=byte, needed=bit, available=total_bits - byte * 8)
+  }
+  self.byte_pos = byte
+  self.bit_pos = bit
+}
+
+///|
+/// 把当前 (byte, bit) 位置快照返回；与 `seek` 配合可实现事务式试读。
+fn VorbisBitReader::snapshot(self : VorbisBitReader) -> (Int, Int) {
+  (self.byte_pos, self.bit_pos)
+}
+
+///|
+/// 读取一个无符号变长整数（Vorbis-style LEB128 风格：最多 32 位，7 位/字节，LSB 在先）。
+///
+/// 连续位模式：每字节低位在前，最高位是「后续还有字节」标志。读到有字节的最高位
+/// 为 0 时结束。累计超过 32 位或读完整个数据流都没遇到终止字节时抛
+/// `AudioError::LimitExceeded` / `Truncated`。
+fn VorbisBitReader::read_uleb128(self : VorbisBitReader) -> Int raise AudioError {
+  let mut result : Int64 = 0L
+  let mut shift = 0
+  loop {
+    let byte = self.read_bits(8)
+    let val = byte & 0x7F
+    result = result | (val.to_int64() << shift)
+    shift = shift + 7
+    if (byte & 0x80) == 0 {
+      break
+    }
+    if shift > 35 {
+      raise AudioError::LimitExceeded("vorbis: uleb128 超过 32 位范围")
+    }
+  }
+  if result > 2147483647L || result < -2147483648L {
+    raise AudioError::LimitExceeded("vorbis: uleb128 溢出 Int32 范围")
+  }
+  result.to_int()
+}
+
 // ---------------------------------------------------------------------------
 // 通用小工具
 // ---------------------------------------------------------------------------
