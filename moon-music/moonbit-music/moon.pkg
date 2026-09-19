@@ -1,6 +1,30 @@
-// moonaudio —— 纯 MoonBit 音频解码库
-// 单包结构：本目录下所有 .mbt 同属一个包，文件之间不互相 import。
-// 接口契约见 CONTRACT.md
+// moonaudio —— 纯 MoonBit 音频解码库（单包架构）
+//
+// = 单包结构说明 =
+//   本目录下所有 .mbt 文件同属一个 MoonBit 包（包名见 moon.mod 的 name 字段）。
+//   文件之间**不需要互相 import**，所有 pub/pub(all) 定义在包内互相可见。
+//   这种架构的好处：
+//     * 零循环依赖风险（包内符号直接可见）
+//     * 构建产物只有一个 .mbc，集成方 import 一次即可
+//     * 内联跨文件优化不受包边界阻碍
+//   代价是命名空间唯一：各模块的私有辅助函数/类型需要加前缀，详见各文件头。
+//
+// = 公开可见性约定 =
+//   pub(all) → 包内可见 + 跨包可见（供外部集成方调用，属于 CONTRACT 冻结 API）
+//   pub     → 包内可见，文件间可见（测试文件放在同目录，可直接用）
+//   无修饰  → 文件内私有（同文件的函数/类型可见）
+//
+// = 显式导入（仅核心依赖） =
+//   整个库严格零外部依赖，只使用 moonbitlang/core。除 prelude（Bytes/Array/String/...）
+//   自动导入外，这里只显式列出不在 prelude 里的核心模块：
+//
+//     debug          → Debug derive 宏需要的运行时支持（所有 pub struct 都 derive）
+//     encoding/utf8  → @utf8：ID3v2 文本帧解码时需要（虽然 fixtures 自实现了 encoder，
+//                      但解码器侧仍需要标准的 UTF-8 → UTF-16 转换）
+//
+//   任何时候不要在本文件新增第三方包。需要新功能时，要么：
+//     (a) 在 core 里找等价物（推荐，零依赖）
+//     (b) 纯 MoonBit 自实现（fixtures 就是典型例子）
 
 import {
   "moonbitlang/core/debug",

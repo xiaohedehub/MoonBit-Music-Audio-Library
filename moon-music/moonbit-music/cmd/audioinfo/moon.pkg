@@ -1,10 +1,24 @@
-// audioinfo —— moonaudio 的命令行信息工具（只读，不转码）。
+// audioinfo —— moonbit-music 的命令行信息查询工具（只读模式，不做转码）
 //
-// 零依赖：只 import 本库和 `moonbitlang/core` 的 `env`，不使用 FFI，
-// 也不引入任何外部包。`Buffer` / `Bytes` 等来自 core 的 prelude，无需显式 import。
+// = 构建类型 =
+//   pkgtype(kind: "executable") 声明本目录是可执行入口而非库，编译产出
+//   一个独立的二进制（native 目标）或 .mjs（js 目标），而不是可被 import 的 .mbc。
 //
-// 注意：`moonbitlang/core` 没有文件 I/O API，所以本工具读不到文件 ——
-// 原因与取舍写在 main.mbt 的文件头。
+// = 零依赖策略（严格执行） =
+//   本工具只显式 import 两个包：
+//     1. hym0721/moonbit-music @audio
+//        —— 被测试的主库本身，提供 decode / info / tags / detect_format 入口
+//     2. moonbitlang/core/env
+//        —— 只用来拿命令行参数 @env.args()，没有其它 core 子包需求
+//
+//   不使用 FFI，不引入 moonbitlang/x 的任何包（@fs、@path、@argparse 等）。
+//   这是为了证明「库本身是纯内存的，调用方只需要 core + 库两个依赖」。
+//   代价是读不到文件（core 没有文件 I/O API），详见 main.mbt 顶部的大段说明。
+//
+// = prelude 说明 =
+//   Buffer / Bytes / Array / String / println / 字面量 b"..." / 等均来自
+//   moonbitlang/core 的 prelude，**不需要**显式写在 import 里。
+//   如果将来升级到新版 core 去掉了某项 prelude，再按需补进 import。
 
 import {
   "hym0721/moonbit-music" @audio,
