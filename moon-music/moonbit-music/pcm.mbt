@@ -274,3 +274,141 @@ pub fn first_difference(a : Array[Int], b : Array[Int]) -> Int {
     n
   }
 }
+
+///|
+/// 直流（DC）偏移：样本算术平均值。空数组返回 0。
+///
+/// 求和在 `Int64` 中进行，避免 32 位溢出。返回值是「均值 × 2^32」的定点形式：
+/// 即 `sum * 4294967296 / n`，这样调用方可在后续计算中保持精度再截断。
+/// 需要浮点均值时用 `dc_offset_double`。
+pub fn dc_offset(samples : Array[Int]) -> Int64 {
+  let n = samples.length()
+  if n == 0 {
+    return 0L
+  }
+  let mut sum : Int64 = 0L
+  for s in samples {
+    sum = sum + s.to_int64()
+  }
+  (sum << 32).div(n.to_int64())
+}
+
+///|
+/// 直流偏移（浮点均值）。空数组返回 0.0。
+pub fn dc_offset_double(samples : Array[Int]) -> Double {
+  let n = samples.length()
+  if n == 0 {
+    return 0.0
+  }
+  let mut sum : Int64 = 0L
+  for s in samples {
+    sum = sum + s.to_int64()
+  }
+  sum.to_double() / n.to_double()
+}
+
+///|
+/// 移除直流偏移：每个样本减去均值（四舍五入到最近整数，.5 向正无穷）。
+///
+/// 用于消除录音硬件或 AD 转换器引入的固定偏置。均值计算用 `Int64`，
+/// 减法用 `Int64` 中转，最终 `to_int()` 截断；精度损失不超过 ±0.5 个量化级。
+pub fn remove_dc_offset(samples : Array[Int]) -> Array[Int] {
+  let n = samples.length()
+  if n == 0 {
+    return []
+  }
+  let mut sum : Int64 = 0L
+  for s in samples {
+    sum = sum + s.to_int64()
+  }
+  // mean = sum / n，使用定点（Q32）实现四舍五入
+  let mean_q32 = if sum >= 0L {
+    (sum << 32).div(n.to_int64()) + (1L << 31)
+  } else {
+    (sum << 32).div(n.to_int64()) - (1L << 31)
+  }
+  let mean = (mean_q32 >> 32).to_int()
+  let out : Array[Int] = Array::make(n, 0)
+  for i in 0..<n {
+    out[i] = samples[i] - mean
+  }
+  out
+}
+
+///|
+/// 静音检测：判断一段样本是否「低于」给定阈值。
+///
+/// - `threshold`：峰值幅度阈值（含），小于等于该值视为静音。通常取 4~64 之间。
+/// - `min_consecutive`：至少连续多少个样本全部低于阈值才算静音。用于避免
+///   瞬时噪声穿过阈值。设为 0 或 1 时退化为「存在任一样本 ≤ threshold」。
+///   若 `min_consecutive > samples.length()`，恒返回 `false`。
+pub fn is_silent(samples : Array[Int], threshold : Int, min_consecutive : Int) -> Bool {
+  let n = samples.length()
+  if min_consecutive <= 1 {
+    return peak_amplitude(samples) <= threshold
+  }
+  if min_consecutive > n {
+    return false
+  }
+  let mut run = 0
+  for s in samples {
+    let abs_s = if s < 0 { -s } else { s }
+    if abs_s <= threshold {
+      run = run + 1
+      if run >= min_consecutive {
+        return true
+      }
+    } else {
+      run = 0
+    }
+  }
+  false
+}
+
+///|
+/// RMS（均方根）幅度：sqrt(mean(s^2))。空数组返回 0。
+///
+/// 用于 VU 表、响度预估。平方与求和在 `Int64` 中进行，最终用 `Double` 开方。
+/// 结果单位与输入相同：如果样本是 16-bit，RMS 也是 16-bit 满量程的线性值。
+pub fn rms_amplitude(samples : Array[Int]) -> Double {
+  let n = samples.length()
+  if n == 0 {
+    return 0.0
+  }
+  let mut sum_sq : Int64 = 0L
+  for s in samples {
+    let v = s.to_int64()
+    sum_sq = sum_sq + v * v
+  }
+  Double::sqrt(sum_sq.to_double() / n.to_double())
+}
+
+///|
+/// 对样本按 `gain` 线性增益，**饱和**（不回绕）到 32 位有符号范围。
+///
+/// `gain` 为 1.0 等价于逐样本拷贝；0.5 衰减 6 dB；2.0 放大 6 dB。
+/// 浮点→整数使用「四舍五入到最近、.5 远离零」的 banker 风格舍入。
+pub fn apply_gain(samples : Array[Int], gain : Double) -> Array[Int] {
+  let n = samples.length()
+  let out : Array[Int] = Array::make(n, 0)
+  let min_i32 = -2147483648.0
+  let max_i32 = 2147483647.0
+  for i in 0..<n {
+    let v = samples[i].to_double() * gain
+    let clamped = if v < min_i32 {
+      min_i32
+    } else if v > max_i32 {
+      max_i32
+    } else {
+      v
+    }
+    // 四舍五入，远离零
+    let rounded = if clamped >= 0.0 {
+      Double::floor(clamped + 0.5)
+    } else {
+      Double::ceil(clamped - 0.5)
+    }
+    out[i] = rounded.to_int64().to_int()
+  }
+  out
+}
