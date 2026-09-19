@@ -1,3 +1,7 @@
+// Vorbis 解码器独立自检工程
+// 从主库剥离的最小依赖单元，用于对真实 Ogg/Vorbis 样本做回归测试
+// 包含：码书类型定义、Ogg 页解析、错误处理、自检主程序
+
 import {
   "moonbitlang/core/debug",
   "moonbitlang/core/encoding/utf8" @utf8,
