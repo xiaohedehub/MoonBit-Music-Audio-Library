@@ -10,6 +10,7 @@
 //     (c) 在调用方用 wrapper enum，而不是改动本文件
 //
 // = 语义分类（不是 derive，是人为约定） =
+//   Io              → 外部 I/O 失败（读文件/网络/内存映射错误等），调用方负责
 //   Truncated       → 输入本身截断，重传/换文件可能恢复
 //   InvalidMagic    → 不是音频 / 数据损坏，通常是硬错误
 //   Unsupported     → 文件合法但本实现未覆盖，属于"非致命功能缺口"
@@ -25,6 +26,8 @@
 /// 声明为 `pub(all)` 而非 `pub`：调用方与测试需要**构造**这些值
 /// （例如断言某个输入恰好产生 `InvalidMagic`），只读类型无法构造。
 pub(all) suberror AudioError {
+  /// 外部 I/O 错误（调用方读文件/网络失败时用此分支包装）。
+  Io(String)
   /// 字节流太短、结构不完整。
   Truncated(offset~ : Int, needed~ : Int, available~ : Int)
   /// 魔数或同步字不匹配。
@@ -45,6 +48,8 @@ pub(all) suberror AudioError {
 /// 将错误转为人类可读的中文描述（用于 CLI 和日志打印）。
 pub fn AudioError::describe(self : AudioError) -> String {
   match self {
+    AudioError::Io(msg) =>
+      "外部 I/O 错误：\{msg}",
     AudioError::Truncated(offset, needed, available) =>
       "字节流截断：在偏移 0x\{offset.to_hex()} 处需要 \{needed} 字节，但只剩 \{available} 字节",
     AudioError::InvalidMagic(msg) =>
@@ -64,6 +69,8 @@ pub fn AudioError::describe(self : AudioError) -> String {
 /// 与 `describe()` 语义一一对应，避免中英文信息不对称导致的排查困难。
 pub fn AudioError::describe_en(self : AudioError) -> String {
   match self {
+    AudioError::Io(msg) =>
+      "external I/O error: \{msg}",
     AudioError::Truncated(offset, needed, available) =>
       "stream truncated: need \{needed} bytes at offset 0x\{offset.to_hex()}, only \{available} bytes left",
     AudioError::InvalidMagic(msg) =>
@@ -81,6 +88,7 @@ pub fn AudioError::describe_en(self : AudioError) -> String {
 /// 错误类型短标签（枚举分支名），用于聚合统计与 JSON 序列化。
 pub fn AudioError::kind(self : AudioError) -> String {
   match self {
+    AudioError::Io(_) => "Io",
     AudioError::Truncated(..) => "Truncated",
     AudioError::InvalidMagic(_) => "InvalidMagic",
     AudioError::Unsupported(_) => "Unsupported",
@@ -106,6 +114,7 @@ pub fn AudioError::severity(self : AudioError) -> Int {
     AudioError::Unsupported(_) => 1,
     AudioError::Truncated(..) => 2,
     AudioError::LimitExceeded(_) => 2,
+    AudioError::Io(_) => 2,
     AudioError::InvalidMagic(_) => 3,
     AudioError::ChecksumMismatch(..) => 3,
   }
@@ -124,6 +133,7 @@ pub fn AudioError::is_data_corruption(self : AudioError) -> Bool {
     AudioError::Truncated(..) => true,
     AudioError::Unsupported(_) => false,
     AudioError::LimitExceeded(_) => false,
+    AudioError::Io(_) => false,
   }
 }
 
@@ -169,6 +179,8 @@ pub fn AudioError::to_json(self : AudioError) -> String {
     out
   }
   match self {
+    AudioError::Io(msg) =>
+      "{\"kind\":\"Io\",\"message\":\"" + esc(msg) + "\"}",
     AudioError::Truncated(offset, needed, available) =>
       "{\"kind\":\"Truncated\",\"offset\":\{offset},\"needed\":\{needed},\"available\":\{available}}",
     AudioError::InvalidMagic(msg) =>

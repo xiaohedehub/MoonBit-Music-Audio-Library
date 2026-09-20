@@ -386,7 +386,7 @@ pub(all) struct VorbisInfo {
   bitrate_nominal : Int
   bitrate_min : Int
   comments : Array[(String, String)]
-} derive(@debug.Debug)
+} derive(Eq, @debug.Debug)
 
 ///|
 /// blocksize 指数 → 实际块大小。Vorbis I 只允许 64..8192，即指数 6..13。

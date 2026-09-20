@@ -263,13 +263,17 @@ fn fixtures() -> Array[Fixture] {
 /// 适合大文件快速预检。
 fn probe(data : Bytes, tags_only : Bool, check_only : Bool) -> Probe raise @audio.AudioError {
   if check_only {
-    // 预检模式：只调 info()，不分配 PCM 缓冲。
-    let info = @audio.info(data)
+    // 预检模式：只调 info() + tags()，都只读头部、不解码样本。
+    // info() 返回的是 AudioFormat 本身（不是 Audio），所以 format = Some(info)。
+    let format = @audio.info(data)
+    // tags() 同样只读头部（FLAC metadata / ID3v2 / Vorbis comment），成本可接受。
+    // 标签解析失败不影响格式信息，用 try+catch 兜底，失败时给空数组。
+    let tags = try { @audio.tags(data) } catch { _ => [] }
     {
-      format: Some(info.format),
+      format: Some(format),
       frames: None,
       duration: None,
-      tags: Some(info.tags),
+      tags: Some(tags),
     }
   } else if tags_only {
     { format: None, frames: None, duration: None, tags: Some(@audio.tags(data)) }
@@ -313,6 +317,7 @@ fn run_probe(data : Bytes, tags_only : Bool, check_only : Bool) -> Outcome {
   try {
     Probed(probe(data, tags_only, check_only))
   } catch {
+    @audio.Io(message) => DecodeFailed("Io", [("message", message)])
     @audio.InvalidMagic(message) => DecodeFailed("InvalidMagic", [("message", message)])
     @audio.Unsupported(feature) => DecodeFailed("Unsupported", [("feature", feature)])
     @audio.Truncated(offset~, needed~, available~) => DecodeFailed(

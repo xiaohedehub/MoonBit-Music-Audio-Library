@@ -10,6 +10,8 @@
 /// 声明为 `pub(all)` 而非 `pub`：调用方与测试需要**构造**这些值
 /// （例如断言某个输入恰好产生 `InvalidMagic`），只读类型无法构造。
 pub(all) suberror AudioError {
+  /// 外部 I/O 错误（调用方读文件/网络失败时用此分支包装）。
+  Io(String)
   /// 字节流太短、结构不完整。
   Truncated(offset~ : Int, needed~ : Int, available~ : Int)
   /// 魔数或同步字不匹配。

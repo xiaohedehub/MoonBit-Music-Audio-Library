@@ -147,15 +147,14 @@ fn ogg_test_flip_byte(data : Bytes, index : Int) -> Bytes {
 /// 失败信息里能直接看出拿到的是哪一类错误（以及 Truncated/ChecksumMismatch 的数值）。
 fn ogg_test_error_tag(err : @audio.AudioError) -> String {
   match err {
+    @audio.AudioError::Io(_) => "Io",
     @audio.AudioError::Truncated(offset~, needed~, available~) =>
-      "Truncated(offset=\{offset}, needed=\{needed}, available=\{available})"
-    @audio.AudioError::InvalidMagic(_) => "InvalidMagic"
-    @audio.AudioError::Unsupported(_) => "Unsupported"
+      "Truncated(offset=\{offset}, needed=\{needed}, available=\{available})",
+    @audio.AudioError::InvalidMagic(_) => "InvalidMagic",
+    @audio.AudioError::Unsupported(_) => "Unsupported",
     @audio.AudioError::ChecksumMismatch(expected~, actual~) =>
-      "ChecksumMismatch(expected=\{expected}, actual=\{actual})"
-    @audio.AudioError::LimitExceeded(_) => "LimitExceeded"
-    // AudioError 的 5 个分支在上面都列全了（errors.mbt 已冻结，不再新增分支），
-    // 编译器确认这里是穷尽的，所以不写 `_` 兜底（写了反而报 unreachable_code）。
+      "ChecksumMismatch(expected=\{expected}, actual=\{actual})",
+    @audio.AudioError::LimitExceeded(_) => "LimitExceeded",
   }
 }
 

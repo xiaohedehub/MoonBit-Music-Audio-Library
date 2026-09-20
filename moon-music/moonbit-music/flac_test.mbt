@@ -589,6 +589,7 @@ fn flac_t_meta_error_kind(data : Bytes) -> String {
     ignore(parse_flac_metadata(data))
     "<没有抛错>"
   } catch {
+    AudioError::Io(_) => "Io"
     AudioError::InvalidMagic(_) => "InvalidMagic"
     AudioError::Truncated(..) => "Truncated"
     AudioError::Unsupported(_) => "Unsupported"
@@ -604,6 +605,7 @@ fn flac_t_decode_error_kind(data : Bytes) -> String {
     ignore(decode_flac(data))
     "<没有抛错>"
   } catch {
+    AudioError::Io(_) => "Io"
     AudioError::InvalidMagic(_) => "InvalidMagic"
     AudioError::Truncated(..) => "Truncated"
     AudioError::Unsupported(_) => "Unsupported"
